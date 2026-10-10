@@ -159,6 +159,9 @@ function open(c: Chapter) {
 .head {
   display: flex;
   align-items: center;
+  /* 窗口窄了让说明文字和按钮各占一行，而不是把右边的按钮挤出可视区 */
+  flex-wrap: wrap;
+  row-gap: 4px;
   gap: 10px;
   padding: 9px 14px;
   border-bottom: 1px solid var(--line);

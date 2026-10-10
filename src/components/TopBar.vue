@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { aiEnabled, settings, THEMES, cycleTheme } from '@/core/settings'
 import { currentChapter, currentWords, saveNow, state, todayWordsNow, totalWords } from '@/stores/workspace'
 import { editorState, MAIN_VIEWS, navState, setDockTab, setView } from '@/stores/editor'
@@ -55,6 +55,9 @@ const editItems = computed(() => [
   { label: '快捷键一览', off: false, run: () => emit('help') }
 ])
 const workItems = computed(() => [
+  // AI 在窄顶栏里会被让位（它带 data-mobile="hide"），所以菜单里必须有它 ——
+  // 「配好了 AI 却找不到入口」正是这次要修的那类问题。
+  { label: 'AI 助手', off: false, run: openAi },
   { label: '大纲', off: false, run: () => emit('outline') },
   { label: '导出', off: false, run: () => emit('export') },
   { label: '快照', off: false, run: () => emit('snapshots') },
@@ -99,6 +102,111 @@ function openAi() {
   setDockTab('context')
 }
 
+/* ------------------------------------------------------------------ 顶栏密度
+ *
+ * 顶栏原来是按「1920 全屏正好放得下全部工具」排的：左（位置）+ 中（五个视图 + 字数）
+ * + 右（十几个动作）加起来一千七百像素。窗口一缩，`.right` 是 `flex: 0 0 auto`，
+ * 不会被压缩 —— 结果右侧那排按钮整个被推到窗口外，看着像「功能没了」。
+ *
+ * 所以按**量出来的**可用宽度分三档（不是拍脑袋的像素断点：字体缩放、书名字数都会
+ * 改变实际需要的宽度）：
+ *   full    全显示；
+ *   compact 缩间距、去掉图标、让次要字数与章节名让位 —— 按钮一个不少；
+ *   mini    右区只留主题与「更多」，其余动作收进菜单（跟手机同一套，不另做一份）。
+ * 三档都还放不下时还有最后一道兜底：允许顶栏换成两行（见 .bar 的 flex-wrap），
+ * 这样再窄也只是变高，不会把按钮推到看不见的地方。
+ */
+type Density = 'full' | 'compact' | 'mini'
+const density = ref<Density>('full')
+/** 顶栏是不是要靠两行才放得下（两行时右区独占第二行，见样式里的 data-wrapped） */
+const wrapped = ref(false)
+const barEl = ref<HTMLElement | null>(null)
+const rightEl = ref<HTMLElement | null>(null)
+let ro: ResizeObserver | null = null
+let rafId = 0
+
+/**
+ * 量出某一档「真正需要多宽」。
+ *
+ * 必须临时挂 `data-measure` 把换行与收缩全关掉再量 —— 否则 flex 会把需求悄悄吸收掉：
+ * 按钮被压缩、右区自己折到第二行，于是量出来永远「放得下」，可屏幕上早就糊成一团或
+ * 被推出可视区了（这正是「非全屏时功能显示不全」量不出来的原因）。
+ */
+function needAt(el: HTMLElement, d: Density) {
+  el.dataset.density = d
+  const all = el.scrollWidth // 读取即触发同步布局，拿到的是这一档的字面需求
+  const right = rightEl.value ? rightEl.value.offsetWidth : all
+  return { all, right }
+}
+
+function measure() {
+  const el = barEl.value
+  if (!el) return
+  cancelAnimationFrame(rafId)
+  rafId = requestAnimationFrame(() => {
+    const have = el.clientWidth
+    el.dataset.measure = '1'
+    const full = needAt(el, 'full')
+    const compact = needAt(el, 'compact')
+    const mini = needAt(el, 'mini')
+    delete el.dataset.measure
+    el.dataset.density = density.value // 交回给 Vue 之前先还原成当前值
+
+    /* 退让顺序就是作者要的那个：先缩间距（去图标、藏次要读数）→ 再换成两行 →
+       最后才把动作收进「更多」菜单。任何一步都不许把按钮推出屏幕。 */
+    let want: Density
+    let twoRow = false
+    if (full.all <= have) {
+      want = 'full'
+    } else if (compact.all <= have) {
+      want = 'compact'
+    } else if (compact.right <= have) {
+      // 一整条放不下，但右区自己一行放得下：两行全显示（比收菜单更接近「功能都在」）
+      want = 'compact'
+      twoRow = true
+    } else if (mini.all <= have) {
+      // 右区一行都放不下：收进菜单换回一行
+      want = 'mini'
+    } else {
+      // 极窄（分屏到很小）：菜单 + 换行兜底，至少不出屏幕
+      want = 'mini'
+      twoRow = true
+    }
+    if (want !== density.value) density.value = want
+    if (twoRow !== wrapped.value) wrapped.value = twoRow
+  })
+}
+
+/* 只在**宽度**变了的时候重量。
+   量的时候要临时挂 data-measure（布局会跟着变高变矮），若拿尺寸变化本身当触发条件，
+   就会「测量 → 尺寸变 → 再测量」空转不停。宽度只有容器/窗口能改，换档改不了它。 */
+let lastW = 0
+function onBarResize() {
+  const el = barEl.value
+  if (!el) return
+  const w = el.clientWidth
+  if (w === lastW) return
+  lastW = w
+  measure()
+}
+
+onMounted(() => {
+  onBarResize()
+  // jsdom（冒烟测试）里没有 ResizeObserver —— 两处都得能缺席，不能因为没有它就报错
+  if (typeof ResizeObserver !== 'undefined' && barEl.value) {
+    ro = new ResizeObserver(onBarResize)
+    ro.observe(barEl.value)
+  }
+  window.addEventListener('resize', onBarResize)
+})
+onBeforeUnmount(() => {
+  cancelAnimationFrame(rafId)
+  ro?.disconnect()
+  window.removeEventListener('resize', onBarResize)
+})
+// 缩放改的是字号，顶栏宽度没变（ResizeObserver 不会响），但需要的宽度变了 —— 得重新量
+watch(() => settings.ui.scale, measure)
+
 const onEsc = (e: KeyboardEvent) => {
   if (e.key === 'Escape') moreOpen.value = false
 }
@@ -110,11 +218,15 @@ watch(moreOpen, (on) => {
 watch(mobileEnv, (on) => {
   if (!on) moreOpen.value = false
 })
+// 窗口拉宽回 full 档后「更多」入口就消失了 —— 菜单不能还浮在那儿
+watch(density, (d) => {
+  if (d !== 'mini' && !mobileEnv.value) moreOpen.value = false
+})
 onBeforeUnmount(() => window.removeEventListener('keydown', onEsc, true))
 </script>
 
 <template>
-  <header class="bar">
+  <header ref="barEl" class="bar" :data-density="density" :data-wrapped="wrapped ? 'true' : 'false'">
     <div class="row left">
       <button class="btn-icon" title="章节目录 Ctrl+B" @click="settings.ui.sidebarOpen = !settings.ui.sidebarOpen">☰</button>
       <!-- 后退/前进靠 Alt+←/→，手机上没键盘；手机上收进「更多」菜单 -->
@@ -166,7 +278,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEsc, true))
       </button>
     </div>
 
-    <div class="row right">
+    <div ref="rightEl" class="row right">
       <!-- 沙盒的「已保存」和磁盘无关，必须说清楚，否则作者以为稿子已经落盘了 -->
       <button
         v-if="sandbox.active"
@@ -205,8 +317,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEsc, true))
       <span class="sep" data-mobile="hide"></span>
       <button class="btn-icon" data-mobile="hide" title="快捷键一览（?）" @click="emit('help')">?</button>
       <button class="btn-icon" data-mobile="hide" title="资料面板 Ctrl+J" @click="settings.ui.dockOpen = !settings.ui.dockOpen">▤</button>
-      <!-- 手机上：把上面让位的动作收进这里 -->
-      <button class="btn-icon" data-mobile="only" title="更多" @click="moreOpen = !moreOpen">⋯</button>
+      <!-- 手机上、以及桌面窄窗口（mini 档）：把上面让位的动作收进这里。
+           显示与否由 class 控制，不再只认 ua-mobile —— 桌面半屏也常常放不下整条顶栏。 -->
+      <button class="btn-icon morebtn" title="更多" @click="moreOpen = !moreOpen">⋯</button>
     </div>
 
     <!-- 更多菜单：只在手机上会出现（入口自带 data-mobile="only"）。遮罩负责「点别处收起」 -->
@@ -239,16 +352,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEsc, true))
 /* 顶栏是唯一横跨全部五个视图的东西，所以它必须「安静」：
    降噪办法是不给按钮画边框、只在悬停时显形，用分组 + 细分隔线交代结构。 */
 .bar {
-  height: 44px;
+  /* min-height 而不是 height：窗口窄到一定程度时允许换成两行（flex-wrap），
+     凭这一条兜底，任何宽度下按钮都不会被推到看不见的地方 */
+  min-height: 44px;
+  height: auto;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
+  flex-wrap: wrap;
+  align-content: center;
+  padding: 5px 12px;
   background: var(--bg-panel);
   gap: 10px;
+  row-gap: 4px; /* 必须在 gap 之后：gap 是简写，会把它重置掉 */
   flex: 0 0 auto;
-  /* 「更多」菜单以顶栏为定位参照（只出现在手机上） */
+  /* 「更多」菜单以顶栏为定位参照（手机上、以及桌面窄窗口的 mini 档） */
   position: relative;
 }
 .left,
@@ -266,8 +385,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEsc, true))
   font-size: 12px;
   color: var(--text-soft);
 }
+/* 右区不收缩、内部也不换行：一行放不下时它整块被顶栏挤到第二行去。
+   这是**故意的** —— 让「放不下」这件事变成可测量的（顶栏变高），
+   脚本据此降档（缩间距 → 收进菜单）；若这里允许它自己内部折行，
+   溢出就被它悄悄吸收，脚本永远量不出该降档，最后只能整排推到屏幕外。 */
 .right {
   flex: 0 0 auto;
+  justify-content: flex-end;
 }
 
 /* ---- 左：位置 ---- */
@@ -546,5 +670,91 @@ button.text.on {
 }
 .mm-grid button:disabled {
   opacity: 0.35;
+}
+
+/* 「更多」入口：手机上出现（与底部工具条配套），桌面窄窗口的 mini 档也出现。
+   显示与否由 class 管，不再只挂 data-mobile —— 桌面半屏同样需要它。 */
+.morebtn {
+  display: none;
+}
+html.ua-mobile .morebtn {
+  display: inline-flex;
+}
+
+/* ---- 密度三档（档位由脚本量出来的宽度决定，见 measure()） ----
+ * 桌面窗口被拖窄（或不是全屏）时，原来的做法是右侧按钮整排被推出可视区，
+ * 看起来像「功能不见了」。这里按「先省装饰、再省入口」的顺序退让：
+ * 中档不牺牲任何功能，窄档把动作收进菜单。 */
+.bar[data-density='compact'] {
+  padding: 5px 8px;
+  gap: 6px;
+}
+/* 图标只是锦上添花，一排十来个按钮去掉它就能省下两百来像素 */
+.bar[data-density='compact'] [data-ic]::before {
+  display: none;
+}
+.bar[data-density='compact'] .right .text {
+  padding: 4px 6px;
+}
+.bar[data-density='compact'] .vtab {
+  padding: 3px 7px;
+}
+.bar[data-density='compact'] .bk {
+  max-width: 130px;
+}
+/* 中档让位的是「读数」而不是「动作」：章节名 / 今日目标 / 进度条 / 保存文字。
+   保存状态仍由那个会呼吸的小圆点交代（dot 带 title）。 */
+.bar[data-density='compact'] .chp,
+.bar[data-density='compact'] .plan,
+.bar[data-density='compact'] .mini,
+.bar[data-density='compact'] .save {
+  display: none;
+}
+
+.bar[data-density='mini'] {
+  padding: 5px 8px;
+  gap: 6px;
+}
+/* 窄档：右区只留主题与「更多」，其余（都带 data-mobile="hide"）收进菜单。
+   菜单里视图 / 编辑 / 作品三节齐全，功能一个不少，只是少了「一眼看见」。 */
+.bar[data-density='mini'] [data-mobile='hide'] {
+  display: none !important;
+}
+.bar[data-density='mini'] .morebtn {
+  display: inline-flex;
+}
+.bar[data-density='mini'] .bk {
+  max-width: 34vw;
+}
+.bar[data-density='mini'] .right {
+  justify-content: flex-end;
+}
+
+/* 两行形态：右区独占第二行并靠右排（不然它会顶到第二行最左边，看着像掉下来的）。
+   第一行留给「位置 + 视图 + 字数」这些看一眼就够的信息。 */
+.bar[data-wrapped='true'] .right {
+  flex: 1 1 100%;
+}
+
+/* 按钮自己不许被压缩：压到文字互相叠在一起，比换行难看得多 */
+.right button {
+  flex: 0 0 auto;
+}
+
+/* ---- 测量态 ----
+ * 脚本量「这一档需要多宽」时临时挂上：把换行与收缩全关掉，让 scrollWidth 反映字面需求。
+ * 不这么做，flex 就会把「放不下」悄悄吸收掉（按钮被压扁、右区自己折到第二行），
+ * 量出来永远够用 —— 而屏幕上早就缺东西了，这正是「非全屏时功能显示不全」量不出来的原因。 */
+.bar[data-measure='1'] {
+  flex-wrap: nowrap;
+}
+.bar[data-measure='1'] .left,
+.bar[data-measure='1'] .center,
+.bar[data-measure='1'] .right,
+.bar[data-measure='1'] .left *,
+.bar[data-measure='1'] .center *,
+.bar[data-measure='1'] .right * {
+  flex: 0 0 auto !important;
+  flex-wrap: nowrap !important;
 }
 </style>

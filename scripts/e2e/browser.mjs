@@ -1089,6 +1089,94 @@ try {
   check('降级：回来时标记仍是「已同步」', (await chip()).includes('已同步'), await chip())
   await shot(page, '24-sandbox-after-reload.png')
 
+  /* ---------- 7.11 窄窗口：顶栏自适应 ---------- */
+  section('7.11 窄窗口顶栏：三档密度（缩间距 / 收进菜单）+ 换行兜底')
+  // 顶栏是按「1920 全屏正好放得下全部工具」排的。窗口一窄，`.right` 原先不收缩，
+  // 十几个按钮整排被推到屏幕外 —— 看着就是「功能没了」。这段把这件事钉住：
+  // 任何宽度下顶栏都不许溢出、不许矮到藏东西，动作要么在顶栏、要么在「更多」菜单里。
+  const barProbe = () =>
+    page.evaluate(`
+      const bar = document.querySelector('.bar')
+      const btns = Array.from(bar.querySelectorAll('button')).filter((b) => b.offsetParent !== null)
+      const right = btns.length ? Math.max(...btns.map((b) => b.getBoundingClientRect().right)) : 0
+      const more = bar.querySelector('.morebtn')
+      return {
+        vw: innerWidth,
+        right: Math.round(right),
+        density: bar.dataset.density,
+        h: Math.round(bar.getBoundingClientRect().height),
+        more: !!more && getComputedStyle(more).display !== 'none'
+      }
+    `)
+  // 宽 → 窄逐档收紧（这正是作者把窗口拖小时走的那条路）
+  const rank = { full: 0, compact: 1, mini: 2 }
+  const seen = []
+  for (const w of [1600, 1440, 1280, 1100, 980, 880]) {
+    await page.setViewport(w, 900)
+    await sleep(420)
+    const fit = await barProbe()
+    seen.push(fit)
+    check(`窄窗口 ${w}px：顶栏不溢出（最右按钮完整落在视口内）`, fit.right <= fit.vw, JSON.stringify(fit))
+    check(`窄窗口 ${w}px：顶栏不散架（最多两行）`, fit.h <= 96, JSON.stringify(fit))
+  }
+  check(
+    '窗口越窄密度只降不升（不会在两档之间来回横跳）',
+    seen.every((f, i) => i === 0 || rank[f.density] >= rank[seen[i - 1].density]),
+    seen.map((f) => `${f.vw}:${f.density}`).join(' ')
+  )
+  check(
+    '1600px：一条放得下就只占一条（不许白白多占一行）',
+    seen[0].h <= 60,
+    `${seen[0].vw}: ${seen[0].density} / ${seen[0].h}px`
+  )
+  // 「两行」是可接受的退让（作者要的就是这个）：前提是按钮全都完整可见，
+  // 而不是像以前那样被推出屏幕 —— 那样看着就是「功能没了」。
+  const twoRow = seen.find((f) => f.h > 60)
+  check(
+    '放不下时退回两行（工具栏独占第二行、按钮完整可见），而不是把按钮推出屏幕',
+    !twoRow || (twoRow.right <= twoRow.vw && twoRow.h <= 96),
+    twoRow ? JSON.stringify(twoRow) : '测过的宽度都是单行'
+  )
+  check(
+    '两行时不动用「更多」菜单（入口只在更窄、真的放不下的档位才出现）',
+    !twoRow || !twoRow.more,
+    twoRow ? JSON.stringify(twoRow) : '—'
+  )
+
+  // 最窄那档：动作进菜单，但一个都不能少（到这一步连两行都排不下工具栏了）
+  await page.setViewport(620, 900)
+  await sleep(420)
+  const narrow = await barProbe()
+  check('窄窗口：右区让位后露出「更多」入口', narrow.more && narrow.density === 'mini', JSON.stringify(narrow))
+  await page.click('.bar .morebtn')
+  await page.waitFor("document.querySelector('.more-menu')", { label: '窄窗口下的更多菜单' })
+  const narrowAll = await page.evaluate(`
+    const bar = document.querySelector('.bar')
+    const menu = document.querySelector('.more-menu')
+    const top = Array.from(bar.querySelectorAll('button')).filter((b) => b.offsetParent !== null).map((b) => b.textContent.trim()).join('/')
+    return top + '/' + (menu ? menu.innerText.replace(/\\s+/g, '') : '')
+  `)
+  check(
+    '窄窗口：宽屏顶栏能做的动作，这里一个不少（顶栏 + 菜单里都找得到）',
+    ['大纲', '导出', '快照', '导入稿件', '导入大纲', '参考面板', '设置', '专注写作', '关闭作品', 'AI 助手', '资料面板', '快捷键一览', '写作', '看板', '统计'].every(
+      (t) => narrowAll.includes(t)
+    ),
+    narrowAll.slice(0, 220)
+  )
+  // 从菜单里真点一个：证明这些入口不是「看得见点不着」
+  await page.clickByText('.more-menu button', '导出')
+  await page.waitFor("document.querySelector('.dialog')", { timeout: 5000, label: '从更多菜单打开导出面板' })
+  check('窄窗口：菜单里的动作真的能执行（导出面板打开了）', true)
+  await page.evaluate("const d = document.querySelector('.dialog'); const b = Array.from(d.querySelectorAll('button')).find((x) => x.textContent.trim() === '×'); if (b) b.click(); return true")
+  await sleep(300)
+
+  // 拉宽回去：密度自动升档，不留「菜单开着但入口已经没了」的残影
+  await page.setViewport(1440, 900)
+  await sleep(450)
+  const wide = await barProbe()
+  check('窗口拉宽：密度自动升回、顶栏仍不溢出', wide.density !== 'mini' && wide.right <= wide.vw, JSON.stringify(wide))
+  check('窗口拉宽：窄档的「更多」入口自己收回去', !wide.more, JSON.stringify(wide))
+
   // 关闭作品：沙盒要一起退出（宿主装回去），并留在浏览器里等下次继续
   await page.clickByText('.right button', '关闭作品')
   await page.waitFor("document.querySelector('.home')", { timeout: 8000, label: '回到首页' })
