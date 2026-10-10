@@ -1118,6 +1118,7 @@ try {
     seen.push(fit)
     check(`窄窗口 ${w}px：顶栏不溢出（最右按钮完整落在视口内）`, fit.right <= fit.vw, JSON.stringify(fit))
     check(`窄窗口 ${w}px：顶栏不散架（最多两行）`, fit.h <= 96, JSON.stringify(fit))
+    if (w === 1280) await shot(page, '30-narrow-bar-two-row.png')
   }
   check(
     '窗口越窄密度只降不升（不会在两档之间来回横跳）',
@@ -1150,6 +1151,7 @@ try {
   check('窄窗口：右区让位后露出「更多」入口', narrow.more && narrow.density === 'mini', JSON.stringify(narrow))
   await page.click('.bar .morebtn')
   await page.waitFor("document.querySelector('.more-menu')", { label: '窄窗口下的更多菜单' })
+  await shot(page, '31-narrow-bar-mini-menu.png')
   const narrowAll = await page.evaluate(`
     const bar = document.querySelector('.bar')
     const menu = document.querySelector('.more-menu')
@@ -1163,6 +1165,13 @@ try {
     ),
     narrowAll.slice(0, 220)
   )
+  // 菜单别长到要滚动 —— 那等于把「关闭作品」这类末尾项换个地方藏起来（同一个毛病）
+  const mmFit = await page.evaluate(`
+    const m = document.querySelector('.more-menu')
+    return { sh: m.scrollHeight, ch: m.clientHeight }
+  `)
+  check('窄窗口：菜单一屏放得下，不用滚动去找末尾的动作', mmFit.sh <= mmFit.ch + 4, JSON.stringify(mmFit))
+
   // 从菜单里真点一个：证明这些入口不是「看得见点不着」
   await page.clickByText('.more-menu button', '导出')
   await page.waitFor("document.querySelector('.dialog')", { timeout: 5000, label: '从更多菜单打开导出面板' })

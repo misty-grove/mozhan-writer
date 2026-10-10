@@ -627,7 +627,7 @@ button.text.on {
   right: 6px;
   z-index: 40;
   width: min(78vw, 320px);
-  max-height: 62vh;
+  max-height: 62vh; /* 手机：菜单别把整屏盖住 */
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   padding: 8px;
@@ -636,6 +636,11 @@ button.text.on {
   background: var(--bg-elev);
   box-shadow: var(--shadow-3);
   animation: ui-pop-in 0.16s ease both;
+}
+/* 桌面上顶栏变窄是「窗口拖小了」，屏幕高度还在，菜单没必要被 62vh 卡住 ——
+   否则末尾的「专注写作 / 关闭作品」还得滚一下才看得见，又成了「功能没显示全」 */
+html:not(.ua-mobile) .more-menu {
+  max-height: calc(100vh - 76px);
 }
 .mm-title {
   font-size: 11px;
