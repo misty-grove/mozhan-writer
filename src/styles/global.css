@@ -1,0 +1,1403 @@
+:root {
+  --bg: #ffffff;
+  --bg-soft: #fafafa;
+  --bg-panel: #f7f7f6;
+  /* 输入框 / 卡片 / 浮层这类「抬起来」的表面 */
+  --bg-field: #ffffff;
+  --bg-elev: #ffffff;
+  /* 正文纸张底色：和面板底色分开，护眼/夜间模式下差别才看得出来 */
+  --bg-writing: #ffffff;
+  --text: #2c2c2c;
+  --text-soft: #6b6b6b;
+  --text-dim: #9a9a9a;
+  --line: #e8e8e6;
+  --line-soft: #f0f0ee;
+  --accent: #4a5568;
+  --accent-soft: #eef0f3;
+  --on-accent: #ffffff;
+  --ok: #3f7d55;
+  --warn: #a06a1f;
+  --danger: #b4453a;
+  --tag-ok-bg: #f2f8f4;
+  --tag-ok-line: #cfe3d6;
+  --tag-warn-bg: #fdf8ee;
+  --tag-warn-line: #ecdfc6;
+  /* 提示条：黄 = 注意，红 = 出错，绿 = 成功 */
+  --note-bg: #fdf8ef;
+  --note-line: #e6d6c2;
+  --note-fg: #8a6520;
+  --danger-bg: #fdf3f2;
+  --danger-line: #e8c9c5;
+  --danger-fg: #9d3b31;
+  --ok-bg: #eef7f0;
+  --ok-fg: #2c6b42;
+  /* 搜索命中高亮 */
+  --mark: #ffe9a8;
+  /* 图表/图形画布与连线 */
+  --canvas: #ffffff;
+  --edge: #d8d8d8;
+  --edge-link: #b9a68a;
+  --scroll: #dcdcda;
+  --scroll-hover: #c8c8c6;
+  --radius: 5px;
+  --ui-font: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+
+  /* -------------------- 视觉层 --------------------
+     下面这几个跟主题强相关（阴影在夜间必须是深色的、焦点环要跟着强调色走），
+     所以每个主题都要给一份 —— 自检 §36 会逐个主题对着 :root 数变量，漏一个就报错。 */
+  --shadow-1: 0 1px 2px rgba(24, 26, 27, 0.05), 0 1px 1px rgba(24, 26, 27, 0.04);
+  --shadow-2: 0 2px 6px rgba(24, 26, 27, 0.08), 0 8px 24px rgba(24, 26, 27, 0.10);
+  --shadow-3: 0 6px 14px rgba(24, 26, 27, 0.10), 0 18px 48px rgba(24, 26, 27, 0.18);
+  --ring: rgba(74, 85, 104, 0.3);
+  --bg-hover: #f2f2f1;
+  --bg-active: #e9e9e7;
+  --lift: rgba(24, 26, 27, 0.03);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+/* ----------------------- 安全区 -----------------------
+ *
+ * 安卓开了 edge-to-edge（见 MainActivity 的 enableEdgeToEdge），状态栏和底部手势条
+ * 是透明的，网页直接画在它们底下 —— 顶栏不让开就会被挖孔屏切掉，底栏不让开就压在
+ * 手势条上。桌面端没有这些 inset，env() 取不到时回落到 0，所以这些变量可以放心全局用。
+ *
+ * 选择器刻意写 `html` 而不是 `:root`：`:root` 那一段是三个主题逐变量比对的集合
+ * （selfcheck §36 会对着数），安全区跟主题无关，混进去会被误判成"主题漏了变量"。
+ */
+html {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+
+  /* 动效时长。只在这里定义一处：Vue 是按**这里算出来的时长**决定何时把旧元素摘掉的，
+     JS 里再放一份数字，两边一漂就会出现「动画没演完元素就没了」。
+     缓动统一用「快出慢入」那条曲线（easeOutQuint 的近亲），切换看着有劲但不飘。 */
+  --motion-view: 260ms;
+  --motion-drawer: 240ms;
+  --motion-tab: 150ms;
+  --motion-fade: 200ms;
+  --ease-switch: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+body {
+  font-family: var(--ui-font);
+  color: var(--text);
+  background: var(--bg);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 微交互的统一口径：颜色/阴影可以慢一点让眼睛跟上，位移必须快到像被按下的实体。
+   到处写 duration 会漂，所以这三个时长只在根上定义一次。 */
+button {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 11px;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease, transform 0.08s ease;
+}
+button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--line);
+}
+button:active:not(:disabled) {
+  background: var(--bg-active);
+  transform: translateY(0.5px);
+}
+/* 键盘用户要看得见焦点在哪；鼠标点击时不画圈（:focus-visible 的语义）。
+   必须排除 contenteditable：正文编辑器是全屏写作的地方，
+   一圈 3px 的环等于给整张纸画了个框（真实验收里抓到过）。 */
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:not([contenteditable]):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ring);
+}
+[contenteditable]:focus,
+[contenteditable]:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+button:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+button.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 500;
+  box-shadow: var(--shadow-1);
+}
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.12);
+}
+button.primary:active:not(:disabled) {
+  filter: brightness(0.96);
+  transform: translateY(0.5px);
+}
+button.danger {
+  background: var(--danger);
+  color: var(--on-accent);
+  border-color: var(--danger);
+  box-shadow: var(--shadow-1);
+}
+button.danger:hover:not(:disabled) {
+  background: var(--danger);
+  filter: brightness(1.1);
+}
+button.text {
+  border: none;
+  background: none;
+  padding: 3px 7px;
+  border-radius: 4px;
+  color: var(--text-soft);
+}
+button.text:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+button.text.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 500;
+}
+button.ghost {
+  border-color: transparent;
+}
+button.ghost:hover:not(:disabled) {
+  border-color: var(--line);
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px 9px;
+  background: var(--bg-field);
+  outline: none;
+  width: 100%;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-dim);
+}
+input:hover:not(:disabled),
+textarea:hover:not(:disabled),
+select:hover:not(:disabled) {
+  border-color: var(--scroll-hover);
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+  /* 焦点框是「你现在在改哪一格」的唯一线索，用一层柔光而不是加粗边框 */
+  box-shadow: 0 0 0 3px var(--ring);
+}
+input:disabled,
+textarea:disabled,
+select:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+select {
+  /* 原生箭头太钝，换成自定义三角 + 留好右侧空间 */
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+    linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-position: calc(100% - 14px) calc(50% - 1px), calc(100% - 9px) calc(50% - 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+/* 复选框/单选：原生控件在 Windows 上会缩成一团，给它一点点呼吸 */
+input[type='checkbox'],
+input[type='radio'] {
+  width: auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+input[type='range'] {
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+select option {
+  background: var(--bg-field);
+  color: var(--text);
+}
+::selection {
+  background: var(--accent-soft);
+}
+
+/* ----------------------- 通用小部件 ----------------------- */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.spread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.muted {
+  color: var(--text-soft);
+}
+.dim {
+  color: var(--text-dim);
+}
+.small {
+  font-size: 12px;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 1px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  color: var(--text-soft);
+  background: var(--bg-panel);
+  white-space: nowrap;
+}
+.tag.ok {
+  color: var(--ok);
+  border-color: var(--tag-ok-line);
+  background: var(--tag-ok-bg);
+}
+.tag.warn {
+  color: var(--warn);
+  border-color: var(--tag-warn-line);
+  background: var(--tag-warn-bg);
+}
+.tag.info {
+  color: var(--accent);
+  border-color: var(--line);
+  background: var(--accent-soft);
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+}
+
+/* 「抬起来」的一层：卡片 / 浮层 / 候选块。比 .panel（同为一级背景色）多一层阴影，
+   用来表示「它叠在场景之上」，而不是「它是场景的一部分」。 */
+.card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+}
+.card-hover:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-2);
+  transform: translateY(-1px);
+}
+
+.btn-icon {
+  border: none;
+  background: none;
+  padding: 4px 7px;
+  line-height: 1;
+  color: var(--text-soft);
+  border-radius: 5px;
+}
+.btn-icon:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+hr {
+  border: none;
+  border-top: 1px solid var(--line-soft);
+  margin: 10px 0;
+}
+
+/* ----------------------- 弹窗通用皮肤 -----------------------
+   八个对话框（设置/导入/导出/大纲/快照/沙盒/备份/快捷键）长得一样才对：
+   圆角、阴影、入场动画、头部底色这些只应该在全局写一次，
+   各自只允许保留「宽度 / 最大高度 / z-index」这类真正的差异。
+   选择器一律用 .mask / .dialog > 限定作用域，避免在别处同名的 .head 被误伤。 */
+.mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 17, 18, 0.3);
+  backdrop-filter: blur(1.5px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 50;
+  animation: ui-fade-in 0.16s ease both;
+}
+.dialog {
+  max-width: 100%;
+  max-height: 84vh;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-3);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: ui-pop-in 0.2s cubic-bezier(0.16, 0.84, 0.44, 1) both;
+}
+.dialog > .head {
+  flex: 0 0 auto;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+.dialog > .body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.dialog > .foot {
+  flex: 0 0 auto;
+  padding: 11px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+
+/* ----------------------- 精致度小件 ----------------------- */
+
+/* 键帽：快捷键表里那些 Ctrl+B 要像键盘上的键，光是 Ctrl+B 太容易被当成正文 */
+.kbd,
+kbd {
+  display: inline-block;
+  min-width: 18px;
+  text-align: center;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 1px 5px;
+  color: var(--text-soft);
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* 空状态：别只丢一句「暂无」，给个图标 + 一句说明 + 可选的行动 */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 26px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.empty .e-icon {
+  font-size: 22px;
+  line-height: 1;
+  opacity: 0.5;
+  margin-bottom: 2px;
+}
+.empty .e-title {
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+/* 分段控件：一组互斥选项，比一排按钮更像「一个控件的几个档」 */
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.seg button {
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  font-size: 12px;
+  padding: 3px 10px;
+  color: var(--text-soft);
+}
+.seg button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.seg button.on {
+  background: var(--bg-elev);
+  color: var(--text);
+  font-weight: 500;
+  box-shadow: var(--shadow-1);
+}
+
+/* 分区小标题：面板里「某某 / 某某」那种一行提示 */
+.sec {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  text-transform: none;
+}
+
+/* 会滚的容器：给它一点内边距呼吸，别让内容贴死边框 */
+.scroll-y {
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* 工具条：面板顶部那一行动作按钮的通条 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+
+/* 骨架屏：加载占位，避免白屏时的「卡住了吗」 */
+.skeleton {
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--line-soft) 25%, var(--bg-hover) 37%, var(--line-soft) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-slide 1.3s ease infinite;
+}
+@keyframes skeleton-slide {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+/* ----------------------- 入场动画（合成 + 只播一次） -----------------------
+   用 animation 而不是 <Transition>，是为了让「新加一个弹窗」不必记得包一层组件；
+   类名写在元素上就够了。只动 opacity/transform 两个合成属性，不触发重排。 */
+@keyframes ui-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ui-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes ui-slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* 底部抽屉（bottom sheet）：手机上所有弹窗的入场方式 */
+@keyframes ui-sheet-up {
+  from {
+    opacity: 0.4;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.anim-fade {
+  animation: ui-fade-in 0.18s ease both;
+}
+.anim-pop {
+  animation: ui-pop-in 0.2s cubic-bezier(0.16, 0.84, 0.44, 1) both;
+}
+.anim-down {
+  animation: ui-slide-down 0.18s ease both;
+}
+/* 系统里开了「减少动效」时，一律停掉 —— 这是尊重，不是可选项 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ----------------------- 滚动条（贴边、悬停才明显） ----------------------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+/* 用透明边框把滑块「切」细一圈：轨道上只留一条 4px 的细又会悬浮感，不至于抢界面 */
+::-webkit-scrollbar-thumb {
+  background: var(--scroll);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-hover);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ----------------------- 编辑器正文排版 ----------------------- */
+.paper {
+  background: var(--bg-writing, #fff);
+  color: var(--text);
+  font-family: var(--write-font);
+  font-size: var(--write-size);
+  line-height: var(--write-line);
+}
+.paper p {
+  margin: 0 0 0.6em;
+  text-indent: calc(var(--write-indent) * 1em);
+}
+.paper h1,
+.paper h2,
+.paper h3 {
+  text-indent: 0;
+  margin: 1.15em 0 0.55em;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.45;
+}
+.paper h1 {
+  font-size: 1.35em;
+}
+.paper h2 {
+  font-size: 1.2em;
+}
+.paper h3 {
+  font-size: 1.08em;
+}
+/* 首个标题不要顶上的余量：它紧跟章节标题，已经有一条分隔线了 */
+.paper > h1:first-child,
+.paper > h2:first-child,
+.paper > h3:first-child {
+  margin-top: 0.2em;
+}
+.paper blockquote {
+  margin: 0.9em 0;
+  padding: 0.2em 0 0.2em 1em;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 5px 5px 0;
+  color: var(--text-soft);
+}
+.paper ul,
+.paper ol {
+  padding-left: 2em;
+}
+.paper li {
+  margin: 0.2em 0;
+}
+.paper li p {
+  text-indent: 0;
+  margin-bottom: 0.3em;
+}
+.paper code {
+  font-family: Consolas, Monaco, monospace;
+  font-size: 0.85em;
+  background: var(--line-soft);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.paper pre {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.paper pre code {
+  background: none;
+  padding: 0;
+}
+.paper img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+.paper hr {
+  margin: 1.6em 0;
+  border-top: 1px solid var(--line);
+}
+
+/* ----------------------- 主题 -----------------------
+   三个主题必须覆盖**同一批**变量，只要漏一个（比如 --bg-soft），
+   那个地方就会掉回浅色默认值，夜间模式下变成一块白斑。
+   自检里有一条断言专门盯着这件事。 */
+.theme-sepia {
+  --bg: #f6f1e7;
+  --bg-soft: #efe8da;
+  --bg-panel: #f1ebe0;
+  --bg-field: #fbf7ee;
+  --bg-elev: #fbf7ee;
+  --bg-writing: #fbf7ee;
+  --text: #3d3629;
+  --text-soft: #6a5f4b;
+  --text-dim: #948a75;
+  --line: #e4dccb;
+  --line-soft: #ebe4d6;
+  --accent: #8a6a3a;
+  --accent-soft: #ece2cd;
+  --on-accent: #fffaf0;
+  --ok: #4c7a52;
+  --warn: #9a6b1c;
+  --danger: #a8402f;
+  --tag-ok-bg: #eaf2e6;
+  --tag-ok-line: #cfdcc6;
+  --tag-warn-bg: #f7eedd;
+  --tag-warn-line: #e2d3b5;
+  --note-bg: #f7eedd;
+  --note-line: #ddcaa6;
+  --note-fg: #7d5a18;
+  --danger-bg: #f8e6e2;
+  --danger-line: #dfbdb5;
+  --danger-fg: #8e3126;
+  --ok-bg: #e7f0e3;
+  --ok-fg: #3d6843;
+  --mark: #edd9a0;
+  --canvas: #fbf7ee;
+  --edge: #ded4bf;
+  --edge-link: #b39a72;
+  --scroll: #d8cdb6;
+  --scroll-hover: #c7b99c;
+  /* 暖调阴影：直接用黑色会把纸压脏，所以用纸自己的暗色去投影 */
+  --shadow-1: 0 1px 2px rgba(96, 74, 42, 0.09), 0 1px 1px rgba(96, 74, 42, 0.05);
+  --shadow-2: 0 2px 6px rgba(96, 74, 42, 0.1), 0 8px 24px rgba(96, 74, 42, 0.16);
+  --shadow-3: 0 6px 14px rgba(96, 74, 42, 0.14), 0 18px 48px rgba(96, 74, 42, 0.24);
+  --ring: rgba(138, 106, 58, 0.32);
+  --bg-hover: #e9e2d3;
+  --bg-active: #e0d8c6;
+  --lift: rgba(96, 74, 42, 0.04);
+}
+
+.theme-dark {
+  --bg: #1e1f1e;
+  --bg-soft: #262827;
+  --bg-panel: #242625;
+  --bg-field: #2a2c2a;
+  --bg-elev: #262827;
+  --bg-writing: #202220;
+  --text: #dcdcd8;
+  --text-soft: #a3a39e;
+  --text-dim: #7c7c78;
+  --line: #343634;
+  --line-soft: #2c2e2c;
+  --accent: #8fa3c4;
+  --accent-soft: #2c3138;
+  --on-accent: #131516;
+  --ok: #7cb08d;
+  --warn: #c9a15c;
+  --danger: #d9736a;
+  --tag-ok-bg: #22302a;
+  --tag-ok-line: #3a5145;
+  --tag-warn-bg: #322b1e;
+  --tag-warn-line: #544631;
+  --note-bg: #322b1e;
+  --note-line: #544631;
+  --note-fg: #dcbb75;
+  --danger-bg: #34211f;
+  --danger-line: #5a3733;
+  --danger-fg: #e09186;
+  --ok-bg: #1f2c24;
+  --ok-fg: #85bd96;
+  --mark: #6a5a24;
+  --canvas: #202220;
+  --edge: #3a3d3a;
+  --edge-link: #6b5f47;
+  --scroll: #3d3f3d;
+  --scroll-hover: #4c4f4c;
+  /* 夜间阴影要更沉：浅色投影在深底上几乎看不见，等于没告诉用户「这层在上面」 */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 1px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 2px 8px rgba(0, 0, 0, 0.45), 0 10px 28px rgba(0, 0, 0, 0.5);
+  --shadow-3: 0 8px 18px rgba(0, 0, 0, 0.5), 0 22px 56px rgba(0, 0, 0, 0.62);
+  --ring: rgba(143, 163, 196, 0.42);
+  --bg-hover: #303331;
+  --bg-active: #3a3d3b;
+  --lift: rgba(255, 255, 255, 0.035);
+}
+.theme-dark input,
+.theme-dark textarea,
+.theme-dark select {
+  background: var(--bg-field);
+  color: var(--text);
+  border-color: var(--line);
+}
+.theme-dark img {
+  /* 夜间模式下纯白插图会晃眼 */
+  filter: brightness(0.88);
+}
+
+/* ----------------------- 无障碍：高对比度 ----------------------- */
+/* 加深文字、加重边框、去掉浅层次背景，让低视力也能看清边界在哪 */
+.a11y-contrast {
+  --bg: #ffffff;
+  --bg-soft: #ffffff;
+  --bg-panel: #ffffff;
+  --bg-field: #ffffff;
+  --bg-elev: #ffffff;
+  --bg-writing: #ffffff;
+  --text: #000000;
+  --text-soft: #1a1a1a;
+  --text-dim: #444444;
+  --line: #767676;
+  --line-soft: #a8a8a8;
+  --accent: #00357a;
+  --accent-soft: #e3ecf8;
+  --on-accent: #ffffff;
+  --ok: #0f6b34;
+  --warn: #8a4b00;
+  --danger: #9c1a10;
+  --scroll: #767676;
+  --scroll-hover: #4a4a4a;
+  /* 高对比模式下阴影基本不传达信息，压到极淡，靠边框说边界在哪 */
+  --shadow-1: 0 0 0 1px #767676;
+  --shadow-2: 0 0 0 1px #767676, 0 4px 12px rgba(0, 0, 0, 0.12);
+  --shadow-3: 0 0 0 1px #767676, 0 8px 24px rgba(0, 0, 0, 0.18);
+  --ring: rgba(0, 53, 122, 0.55);
+  --bg-hover: #e8eef8;
+  --bg-active: #d7e2f2;
+  --lift: rgba(0, 53, 122, 0.05);
+}
+.a11y-contrast button,
+.a11y-contrast input,
+.a11y-contrast textarea,
+.a11y-contrast select,
+.a11y-contrast .tag {
+  border-width: 2px;
+}
+.a11y-contrast ::-webkit-scrollbar-thumb {
+  background: #767676;
+  border-width: 2px;
+}
+.a11y-contrast.theme-dark {
+  --bg: #000000;
+  --bg-soft: #000000;
+  --bg-panel: #000000;
+  --bg-field: #101010;
+  --bg-elev: #000000;
+  --bg-writing: #000000;
+  --text: #ffffff;
+  --text-soft: #f0f0f0;
+  --text-dim: #c8c8c8;
+  --line: #9a9a9a;
+  --line-soft: #6a6a6a;
+  --accent: #7fb2ff;
+  --accent-soft: #10243d;
+  --on-accent: #000000;
+  --scroll: #9a9a9a;
+  --scroll-hover: #cfcfcf;
+  --shadow-1: 0 0 0 1px #9a9a9a;
+  --shadow-2: 0 0 0 1px #9a9a9a, 0 4px 14px rgba(0, 0, 0, 0.5);
+  --shadow-3: 0 0 0 1px #9a9a9a, 0 10px 28px rgba(0, 0, 0, 0.6);
+  --ring: rgba(127, 178, 255, 0.6);
+  --bg-hover: #1a2c42;
+  --bg-active: #22384f;
+  --lift: rgba(127, 178, 255, 0.06);
+}
+
+/* ----------------------- 移动端（安卓） -----------------------
+ *
+ * `html.ua-mobile` 由 App 在问清宿主后挂上（见 src/platform 的 hostInfo）。
+ * 手机屏幕只有桌面三分之一宽，原来的三栏（目录 / 稿纸 / 资料）不可能并排放：
+ * 两个侧栏改成**浮在稿纸上的抽屉**，点顶栏的 ☰ 与 ▤ 开关。
+ *
+ * 为什么不用 `@media (max-width)`：窄窗口的桌面浏览器也想保留并排三栏
+ * （那是刻意拖窄的，不是手机）。判断依据只能是宿主，不是宽度。
+ *
+ * 三条手机上的硬规矩（都是真机才会暴露的，写在这里是因为它们不好在代码里注释）：
+ *  1. 凡是贴屏幕边缘的东西都得让开安全区（--sat / --sab），否则被挖孔屏和手势条吃掉。
+ *  2. 触摸目标不小于 44px，且必须有 :active 反馈 —— 手机上没有 hover，
+ *     点下去没反应作者会以为没点到。
+ *  3. 输入框字号不小于 16px：小于这个数，安卓/iOS 聚焦时会把整个页面放大，
+ *     稿纸跟着跳一下，非常难写。
+ */
+html.ua-mobile .body {
+  position: relative;
+}
+html.ua-mobile .tree,
+html.ua-mobile .dock:not(.ref) {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  box-shadow: var(--shadow-3);
+}
+html.ua-mobile .tree {
+  left: 0;
+  width: min(84%, 320px);
+  border-right: 1px solid var(--line);
+}
+/* 只挑右侧资料栏：参考面板的根类是 `.ref dock`，它自己有定位，不该被这里改写 */
+html.ua-mobile .dock:not(.ref) {
+  right: 0;
+  width: min(92%, 360px);
+  border-left: 1px solid var(--line);
+}
+/* 抽屉遮罩：手机上抽屉是盖在稿纸上的，得有个「点别处就收起」的地方。
+   它比抽屉低一层（29 < 30），只盖住稿纸。
+   这里**不能**用 animation 做入场：动画的 `fill: both` 在层叠里压得住 transition，
+   退场时 opacity 会被那条已结束的动画按在 1 上，遮罩永远淡不掉。统一走 .scrim-* 过渡。 */
+.drawer-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 29;
+  background: rgba(16, 17, 18, 0.34);
+}
+/* 顶栏放不下的按钮（由组件自己标注 data-mobile="hide"） */
+html.ua-mobile [data-mobile='hide'] {
+  display: none !important;
+}
+/* 反过来：只在手机上露面的（顶栏的「更多」菜单入口 —— 桌面端整块都不该出现） */
+[data-mobile='only'] {
+  display: none !important;
+}
+html.ua-mobile [data-mobile='only'] {
+  display: inline-flex !important;
+}
+
+/* ---- 顶栏：让开状态栏 ---- */
+html.ua-mobile .bar {
+  height: auto;
+  min-height: 48px;
+  /* 状态栏是透明的（edge-to-edge），顶栏得自己把那一段撑出来 */
+  padding: calc(6px + var(--sat)) max(10px, var(--sar)) 6px max(10px, var(--sal));
+  gap: 6px;
+}
+html.ua-mobile .bar .btn-icon,
+html.ua-mobile .bar button.text {
+  min-height: 40px;
+}
+
+/* ---- 底部工具条：拇指区 ----
+ * 手机上顶栏是够不着的（单手握持时拇指在屏幕下半部），常用动作放到底部：
+ * 目录 / 大纲 / 撤销 / 保存 / 资料。软键盘弹起时它贴在键盘上沿并换成标点条
+ * （见 src/components/MobileBar.vue）。 */
+.mobile-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-panel);
+  /* 手势条：底栏是屏幕最下面一条，不让开就被压住 */
+  padding: 0 max(4px, var(--sal)) var(--sab) max(4px, var(--sar));
+  min-height: 52px;
+  z-index: 28;
+}
+.mobile-bar.pinned {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+/* 键盘弹起：底栏坐到键盘上沿（--kb 由 src/platform/mobile.ts 写入） */
+.mobile-bar.on-keyboard {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: var(--kb, 0px);
+  padding-bottom: 0;
+  box-shadow: var(--shadow-2);
+}
+.mobile-bar button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 48px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 2px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* 图标在上、字在下（安卓标准的底部导航形态），图标不进 textContent。
+   没有 data-ic 的按钮（标点条）不能让伪元素占位，否则多出一段空白间距。 */
+.mobile-bar button:not([data-ic])::before {
+  content: none;
+}
+.mobile-bar button[data-ic]::before {
+  content: attr(data-ic);
+  font-size: 17px;
+  line-height: 1;
+  opacity: 0.9;
+}
+.mobile-bar button:active:not(:disabled) {
+  background: var(--bg-active);
+}
+.mobile-bar button.on {
+  color: var(--accent);
+}
+/* 键盘上方的标点条：中文写作一天要敲几百次的几个 */
+.mobile-bar.keys button {
+  font-size: 16px;
+  min-height: 46px;
+}
+
+/* 列表行的触摸目标：手机上 26px 高的行是点不准的 */
+html.ua-mobile .ch,
+html.ua-mobile .vol-line {
+  min-height: 44px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/* 专注模式的退出按钮：手机上它贴在屏幕最下面，得让开手势条 */
+html.ua-mobile .exit-focus {
+  bottom: calc(18px + var(--sab));
+}
+
+/* ---- 稿纸：手机上重排 ---- */
+html.ua-mobile .editor-scroll {
+  /* 底部留出工具条的高度，否则最后几行永远被压在条下面 */
+  padding: 14px 14px calc(45vh + 60px);
+  -webkit-overflow-scrolling: touch;
+}
+/* 稿纸在手机上不再垫 52px 的页边距 —— 390px 宽的屏幕去掉两侧就只剩 286px 了 */
+html.ua-mobile .paper-col {
+  padding: 20px 18px 72px;
+  border-radius: 8px;
+  min-height: calc(100vh - 180px);
+}
+html.ua-mobile .ch-title {
+  font-size: 17px;
+}
+
+/* ---- 统计区在手机上让位给作品名 ---- */
+html.ua-mobile .center {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+html.ua-mobile .home {
+  padding: calc(20px + var(--sat)) max(14px, var(--sar)) calc(60px + var(--sab)) max(14px, var(--sal));
+}
+html.ua-mobile .btn-icon,
+html.ua-mobile button.text {
+  min-height: 40px;
+}
+
+/* 输入框字号下限：小于 16px 时安卓/iOS 聚焦会自动放大整个页面，
+   稿纸跟着跳一下。这条必须压过各组件里 .small 之类的字号，所以用 !important。 */
+html.ua-mobile input,
+html.ua-mobile textarea,
+html.ua-mobile select {
+  font-size: 16px !important;
+}
+/* 手机上没有 hover，:hover 那套反馈全废，按下必须立刻有反应 */
+html.ua-mobile .card-hover:hover {
+  border-color: var(--line);
+  box-shadow: var(--shadow-1);
+  transform: none;
+}
+html.ua-mobile .card-hover:active {
+  border-color: var(--accent);
+  background: var(--bg-active);
+}
+
+/* ---- 弹窗改底部抽屉 ----
+ * 手机上居中弹窗是很别扭的：内容在屏幕中间、够不着，键盘弹起还会被顶歪。
+ * 市面主流做法是 bottom sheet —— 从底部升起、贴着拇指、上面留一截原页面可点。 */
+html.ua-mobile .mask {
+  align-items: flex-end;
+  padding: 0;
+}
+html.ua-mobile .dialog {
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(92% - var(--sat));
+  border-radius: 14px 14px 0 0;
+  border-bottom: 0;
+  animation: ui-sheet-up 0.22s cubic-bezier(0.16, 0.84, 0.44, 1) both;
+}
+html.ua-mobile .dialog > .head {
+  position: relative;
+  padding: 16px 16px 12px;
+  border-radius: 14px 14px 0 0;
+}
+/* 顶部那条小横杠：给「这是个从底下升上来的抽屉」一个视觉提示 */
+html.ua-mobile .dialog > .head::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+}
+html.ua-mobile .dialog > .body {
+  padding: 14px 16px;
+  -webkit-overflow-scrolling: touch;
+}
+html.ua-mobile .dialog > .foot {
+  /* 底部按钮要避开手势条，否则「确定」点不到 */
+  padding: 12px 16px calc(12px + var(--sab));
+}
+html.ua-mobile .dialog button {
+  min-height: 44px;
+}
+
+/* ============ 切换动效（PPT 式「推入」）============
+ *
+ * 手机上「换一屏」是整块替换，没有动画的话眼睛会丢参照物 —— 分不清是往前还是往后了。
+ * 整段只用 `html.ua-mobile` 前缀，桌面端行为一字不变（要放开到桌面，去掉前缀即可，
+ * 选择器本身跟宿主无关）。
+ *
+ * 三条实现上的硬要求：
+ *  1. 推入必须「两个同时在场上」才像 PPT（新的进来把旧的挤出去），所以不能用 `mode`。
+ *     两个同时在场上就意味着容器得 overflow:hidden、离场的那份要脱离文档流，
+ *     否则它们会并排各占一半，看着像内容忽然缩了一下。
+ *  2. 时长只从 `--motion-*` 取。Vue 是读**这里算出来的时长**决定何时把旧元素摘掉的；
+ *     若在别处写死一个不同的数字，就会出现「动画演一半元素没了」。
+ *  3. 只动 transform / opacity 两个合成属性，不碰 width / left，避免每帧重排。
+ */
+html.ua-mobile .main {
+  position: relative;
+  overflow: hidden;
+}
+html.ua-mobile .vp-left-enter-active,
+html.ua-mobile .vp-left-leave-active,
+html.ua-mobile .vp-right-enter-active,
+html.ua-mobile .vp-right-leave-active {
+  transition: transform var(--motion-view) var(--ease-switch);
+}
+html.ua-mobile .vp-left-leave-active,
+html.ua-mobile .vp-right-leave-active {
+  position: absolute;
+  inset: 0;
+}
+/* 往后翻（写作 → 看板）：新页从右边推进来，旧页往左退出去 */
+html.ua-mobile .vp-left-enter-from {
+  transform: translateX(100%);
+}
+html.ua-mobile .vp-left-leave-to {
+  transform: translateX(-100%);
+}
+/* 往前翻：反过来 */
+html.ua-mobile .vp-right-enter-from {
+  transform: translateX(-100%);
+}
+html.ua-mobile .vp-right-leave-to {
+  transform: translateX(100%);
+}
+
+/* 两个侧栏：从各自的边缘滑出来，方向和「往哪边滑开」的手势对得上 */
+html.ua-mobile .drawer-l-enter-active,
+html.ua-mobile .drawer-l-leave-active,
+html.ua-mobile .drawer-r-enter-active,
+html.ua-mobile .drawer-r-leave-active {
+  transition: transform var(--motion-drawer) var(--ease-switch);
+}
+html.ua-mobile .drawer-l-enter-from,
+html.ua-mobile .drawer-l-leave-to {
+  transform: translateX(-100%);
+}
+html.ua-mobile .drawer-r-enter-from,
+html.ua-mobile .drawer-r-leave-to {
+  transform: translateX(100%);
+}
+
+/* 遮罩淡入淡出：抽屉滑出来的同时，底下的稿纸暗下去 */
+.scrim-enter-active,
+.scrim-leave-active {
+  transition: opacity var(--motion-fade) ease;
+}
+.scrim-enter-from,
+.scrim-leave-to {
+  opacity: 0;
+}
+
+/* 右侧页签：淡入 + 小幅横移，方向跟着页签顺序走。
+   用 out-in（一进一出）而不是同时推 —— 面板自己是滚动容器，两个同时在场要额外
+   处理绝对定位和滚动复位，得失不划算。 */
+html.ua-mobile .dock-left-enter-active,
+html.ua-mobile .dock-left-leave-active,
+html.ua-mobile .dock-right-enter-active,
+html.ua-mobile .dock-right-leave-active {
+  transition: opacity var(--motion-tab) ease, transform var(--motion-tab) var(--ease-switch);
+}
+html.ua-mobile .dock-left-enter-from {
+  opacity: 0;
+  transform: translateX(14px);
+}
+html.ua-mobile .dock-left-leave-to {
+  opacity: 0;
+  transform: translateX(-14px);
+}
+html.ua-mobile .dock-right-enter-from {
+  opacity: 0;
+  transform: translateX(-14px);
+}
+html.ua-mobile .dock-right-leave-to {
+  opacity: 0;
+  transform: translateX(14px);
+}
+
+/* 底部工具条：手机上没有 hover，按下去必须立刻有形变；
+   「导航条 ↔ 标点条」互换时让按钮逐颗弹出来，不要整块硬切。 */
+html.ua-mobile .mobile-bar button {
+  transition: background var(--motion-fade) ease, color var(--motion-fade) ease, transform 90ms ease;
+}
+html.ua-mobile .mobile-bar.keys button {
+  animation: ui-pop-in 0.18s var(--ease-switch) both;
+}
+/* 逐颗错开 18ms：一排同时弹出来会显得很笨重 */
+html.ua-mobile .mobile-bar.keys button:nth-child(2) { animation-delay: 18ms; }
+html.ua-mobile .mobile-bar.keys button:nth-child(3) { animation-delay: 36ms; }
+html.ua-mobile .mobile-bar.keys button:nth-child(4) { animation-delay: 54ms; }
+html.ua-mobile .mobile-bar.keys button:nth-child(5) { animation-delay: 72ms; }
+html.ua-mobile .mobile-bar.keys button:nth-child(6) { animation-delay: 90ms; }
+html.ua-mobile .mobile-bar.keys button:nth-child(7) { animation-delay: 108ms; }
+html.ua-mobile .mobile-bar.keys button:nth-child(8) { animation-delay: 126ms; }
+html.ua-mobile .mobile-bar.keys button:nth-child(9) { animation-delay: 144ms; }
+html.ua-mobile .mobile-bar.keys button:nth-child(10) { animation-delay: 162ms; }
+html.ua-mobile .mobile-bar.keys button:nth-child(11) { animation-delay: 180ms; }
+/* 选中的那颗（目录 / 资料）在顶上补一条指示：手机屏上颜色差一点点不够，
+   还得有个位置上的标记 */
+html.ua-mobile .mobile-bar button.on::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  width: 18px;
+  height: 2px;
+  margin-left: -9px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: ui-fade-in 0.18s ease both;
+}
+
+/* ============ 全局视图在手机上的重排 ============
+ * 看板 / 关系图 / 时间线 / 统计原本是按「桌面一屏放下三栏」设计的：390px 上要么挤成
+ * 一条缝，要么得靠横滑去找内容。手机上统一改成**单列纵向** —— 滚动方向只留上下一个。
+ * 视图根类（.board / .graph / .tl / .stats）都在 .ua-mobile 里，
+ * `html.ua-mobile .board .cols` = 0-3-1，压得住组件的 scoped 样式（0-3-0）。 */
+
+/* 头部说明行：桌面上是「标题 + 一长串说明 + 按钮」挤一行，手机上必须能换行 */
+html.ua-mobile .board .head,
+html.ua-mobile .graph .head,
+html.ua-mobile .tl .head,
+html.ua-mobile .stats .head {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  padding: 8px 12px;
+}
+html.ua-mobile .board .cols,
+html.ua-mobile .graph .bar,
+html.ua-mobile .tl .bar {
+  row-gap: 6px;
+}
+html.ua-mobile .graph .bar,
+html.ua-mobile .tl .bar {
+  padding: 6px 12px;
+}
+/* 筛选用的下拉在手机上要够高，不然点不准 */
+html.ua-mobile .graph .bar select,
+html.ua-mobile .tl .bar select,
+html.ua-mobile .stats .head select {
+  min-height: 36px;
+}
+
+/* ---- 看板：五列横排 → 一列一段 ----
+ * 桌面上「拖卡片换状态」靠 HTML5 拖拽，触摸设备根本不触发那套事件 ——
+ * 手机上不是难看，是**改不了状态**。所以手机上换成卡片上的「移到…」按钮
+ * （见 BoardView：data-mobile="only"，只在手机出现）。 */
+html.ua-mobile .board .cols {
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+html.ua-mobile .board .col {
+  flex: 0 0 auto;
+  min-width: 0;
+  width: 100%;
+}
+/* 列内不再自己滚：手机上滚动只留在 .cols 这一层，否则会出现「滚到一半卡住」 */
+html.ua-mobile .board .cards {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+html.ua-mobile .board .card {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+html.ua-mobile .board .card .t {
+  font-size: 15px;
+}
+/* 「移到…」展开出来的状态按钮：一行四个，每个都够 44px 高 */
+html.ua-mobile .board .moves {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-top: 8px;
+}
+html.ua-mobile .board .moves button {
+  min-height: 44px;
+  font-size: 13px;
+}
+html.ua-mobile .board .move-btn {
+  min-height: 36px;
+  margin-top: 8px;
+  width: 100%;
+  font-size: 12px;
+}
+
+/* ---- 关系图：图在上、详情在下 ----
+ * 桌面上详情是贴底的一条 210px 窄栏，手机上让它撑满整行。 */
+html.ua-mobile .graph .side {
+  width: auto;
+  flex: 0 0 auto;
+  max-height: 40vh;
+  border-left: 0;
+  border-top: 1px solid var(--line);
+}
+html.ua-mobile .graph .stage {
+  min-height: 46vh;
+}
+/* 节点拖动在手机上走 Pointer Events（见 GraphView.onDown）。
+   不关掉浏览器自带的那套触摸手势，按住一拖就变成滚页面了。 */
+html.ua-mobile .graph .node {
+  touch-action: none;
+}
+
+/* ---- 时间线：右侧 250px 的矛盾栏 → 挪到底下一条 ----
+ * 手机屏宽 390px，那条 250px 的侧栏会把事件流挤成一条缝，根本没法读。 */
+html.ua-mobile .tl .body {
+  flex-direction: column;
+}
+html.ua-mobile .tl .side {
+  width: auto;
+  flex: 0 0 auto;
+  max-height: 38vh;
+  border-left: 0;
+  border-top: 1px solid var(--line);
+}
+html.ua-mobile .tl .flow {
+  padding: 12px 12px 16px;
+}
+html.ua-mobile .tl .ev {
+  gap: 8px;
+}
+html.ua-mobile .tl .card {
+  padding: 9px 11px;
+}
+
+/* ---- 统计：固定两列 → 单列 ----
+ * `.two` 是 1fr 1fr，390px 上每列只有 ~180px，「各卷字数」「章节状态」的数字会换行。 */
+html.ua-mobile .stats .two {
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+html.ua-mobile .stats .scroll {
+  padding: 12px;
+  gap: 16px;
+}
+html.ua-mobile .stats .cards {
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+}
+html.ua-mobile .stats .chart {
+  height: 108px;
+}
+
+/* ---- 首页：头部一竖排、新建表单单列 ---- */
+html.ua-mobile .home .head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+html.ua-mobile .home .grid,
+html.ua-mobile .home .new-box .grid {
+  grid-template-columns: 1fr;
+}
+html.ua-mobile .home .recent {
+  grid-template-columns: 1fr;
+}
+
+/* ---- 横屏 / 大屏手机 ----
+ * 横过来之后宽度够放两栏了，抽屉就不必再盖住稿纸 —— 目录改成常驻。
+ * 这块用的是 media query（因为它是"宽度够了"的事实，跟宿主无关），
+ * 而 html.ua-mobile 保证它只对手机生效。 */
+@media (orientation: landscape) and (min-width: 620px) {
+  html.ua-mobile .tree {
+    position: static;
+    width: 232px;
+    flex: 0 0 232px;
+    box-shadow: none;
+  }
+  html.ua-mobile .drawer-scrim {
+    display: none;
+  }
+}

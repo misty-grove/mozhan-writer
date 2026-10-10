@@ -1,0 +1,42 @@
+node_modules/
+dist/
+test-dist/
+test-scale/
+test-panels/
+.DS_Store
+*.log
+
+# e2e 的截图与报告落点。写在工程内是为了不用绝对路径（换台机器 clone 下来就能跑），
+# 每次跑都会重生成，随时可删。
+.e2e-shots/
+
+# 打好的安装包（1.5–2 MB 的二进制）。源码仓库里不放成品，
+# 要发布就挂到 GitHub Releases 上。
+release/
+
+# --- Rust / Tauri ---
+# 构建产物（约 2–5 GB）。桌面版把 NSIS / WiX 打包工具也缓存在 target/.tauri 下
+# （tauri.conf.json 的 bundle.useLocalToolsDir = true），所以这一行顺便把工具缓存也挡在外面。
+src-tauri/target/
+# Tauri 每次构建按 tauri.conf.json 重新生成的权限骨架，不需要进版本库。
+src-tauri/gen/schemas/
+# 安卓工程里由构建脚本摆进去的产物：jniLibs 是每个 ABI 一百多 MB 的 .so，
+# assets 是 dist 的副本，build/ 是 gradle 输出 —— 都不该进版本库。
+src-tauri/gen/android/app/src/main/jniLibs/
+src-tauri/gen/android/app/src/main/assets/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/build/
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/local.properties
+
+# 自签名密钥（安卓更新必须沿用同一把，否则装不上去）
+*.jks
+*.keystore
+
+# --- 测试构建产物（跑 selfcheck/smoke 时生成，进版本库没有意义）---
+test-dist/
+test-panels/
+test-scale/
+
+# 本机构建脚本：里面写死了本机的绝对路径（含用户名），不放公开仓库
+build.ps1

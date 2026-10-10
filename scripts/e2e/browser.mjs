@@ -1,0 +1,1473 @@
+/**
+ * 真实浏览器端到端验收（P3-A）
+ *
+ * 之前所有验证都跑在 jsdom 里，最担心的三件事——File System Access API 授权、
+ * 刷新后目录句柄能否恢复、编辑器与各面板真实渲染——从来没在真浏览器里验过。
+ *
+ * 这里用真实 Chrome 走一遍完整用户流程：
+ *   新建作品 → 建章 → 写作 → 自动保存 → 读盘校验 → 刷新恢复 → 五个视图 → 九个面板 → 采集报错
+ *
+ * File System Access API 怎么在无头环境里测：
+ *   目录选择器是原生弹窗、自动化点不了，于是注入 showDirectoryPicker()
+ *   让它直接返回 OPFS（navigator.storage.getDirectory()）的句柄。
+ *   OPFS 返回的是**货真价实的 FileSystemDirectoryHandle**，
+ *   因此 fsAccessAdapter 里 getDirectoryHandle / createWritable / values() /
+ *   removeEntry / 句柄存 IndexedDB 这些代码路径全部是真实执行的，没有被替换掉。
+ *
+ * 用法：
+ *   node scripts/e2e/browser.mjs                 # 需先起好 dev/preview 服务器
+ *   E2E_URL=http://127.0.0.1:5199/ node scripts/e2e/browser.mjs
+ */
+import { launchChrome, sleep } from './cdp.mjs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+const ROOT = resolve(import.meta.dirname, '../..')
+const URL = process.env.E2E_URL || 'http://127.0.0.1:5199/'
+// 截图落在工程内的 .e2e-shots（已 gitignore），跟着仓库走。
+// 这里原本写的是 F:/AI/e2e-shots —— 一个绝对路径，别人 clone 下来必挂。
+const SHOTS = process.env.E2E_SHOTS || join(ROOT, '.e2e-shots')
+const PORT = Number(process.env.E2E_PORT || 9333)
+const WORK = '端到端验收作品'
+const CH_TITLE = '启程'
+const BODY_LINES = ['船靠岸的时候，雨还没停。', '他站在跳板上，闻到了故乡的煤烟味。']
+/** 降级沙盒那一段用的一组常量 */
+const SBX_WORK = '沙盒验收作品'
+const SBX_LINE = '这一行是沙盒里写的，磁盘上还没有。'
+
+/* ------------------------------------------------------------------ 导入用样例稿件 */
+const FIXTURES = join(SHOTS, 'fixtures')
+
+/** 手工拼 GBK 字节：Node 不自带 GBK 编码器，而这些字的码位是确定的 */
+const GBK_MAP = {
+  第: [0xb5, 0xda],
+  一: [0xd2, 0xbb],
+  二: [0xb6, 0xfe],
+  章: [0xd5, 0xc2],
+  归: [0xb9, 0xe9],
+  乡: [0xcf, 0xe7],
+  旧: [0xbe, 0xc9],
+  人: [0xc8, 0xcb],
+  启: [0xc6, 0xf4],
+  程: [0xb3, 0xcc],
+  重: [0xd6, 0xd8],
+  逢: [0xb7, 0xea],
+  船: [0xb4, 0xac],
+  靠: [0xbf, 0xbf],
+  岸: [0xb0, 0xb6],
+  了: [0xc1, 0xcb],
+  '。': [0xa1, 0xa3],
+  她: [0xcb, 0xfd],
+  没: [0xc3, 0xbb],
+  回: [0xbb, 0xd8],
+  头: [0xcd, 0xb7],
+   ' ': [0x20],
+  '\n': [0x0a]
+}
+
+function gbkBytes(text) {
+  const out = []
+  for (const ch of text) {
+    const b = GBK_MAP[ch]
+    if (!b) throw new Error(`GBK 样例里出现了没登记的字符：${ch}`)
+    out.push(...b)
+  }
+  return Buffer.from(out)
+}
+
+function writeFixtures() {
+  mkdirSync(FIXTURES, { recursive: true })
+  const utf8 = ['第一章 启程', '', '船靠岸的时候，雨还没停。', '', '第二章 重逢', '', '他站在跳板上，闻到了故乡的煤烟味。', ''].join('\n')
+  writeFileSync(join(FIXTURES, 'utf8.txt'), utf8, 'utf8')
+  writeFileSync(join(FIXTURES, 'gbk.txt'), gbkBytes('第一章 启程\n\n船靠岸了。\n\n第二章 重逢\n\n她没回头。\n'))
+  return { utf8: join(FIXTURES, 'utf8.txt'), gbk: join(FIXTURES, 'gbk.txt') }
+}
+
+/* ------------------------------------------------------------------ 断言 */
+let pass = 0
+const failures = []
+const warnings = []
+function check(name, cond, extra = '') {
+  if (cond) {
+    pass++
+    console.log(`  ✓ ${name}`)
+  } else {
+    failures.push(extra ? `${name} — ${extra}` : name)
+    console.log(`  ✗ ${name}${extra ? ' — ' + extra : ''}`)
+  }
+}
+function section(t) {
+  console.log(`\n── ${t}`)
+}
+
+/* ------------------------------------------------------------------ 注入脚本 */
+const INIT = `
+(() => {
+  // 目录选择器直接给 OPFS 根句柄：真实 FileSystemDirectoryHandle，不做任何假实现
+  window.showDirectoryPicker = async () => await navigator.storage.getDirectory()
+
+  window.__fs = {
+    async root() { return await navigator.storage.getDirectory() },
+    async dir(path, create) {
+      let cur = await this.root()
+      for (const s of String(path || '').split('/').filter(Boolean)) cur = await cur.getDirectoryHandle(s, { create: !!create })
+      return cur
+    },
+    async read(path) {
+      const segs = String(path).split('/').filter(Boolean)
+      const d = await this.dir(segs.slice(0, -1).join('/'))
+      const fh = await d.getFileHandle(segs[segs.length - 1])
+      return await (await fh.getFile()).text()
+    },
+    async list(path) {
+      const d = await this.dir(path)
+      const out = []
+      for await (const h of d.values()) out.push(h.name + (h.kind === 'directory' ? '/' : ''))
+      return out.sort()
+    },
+    async walk(path, out) {
+      out = out || []
+      const d = await this.dir(path)
+      for await (const h of d.values()) {
+        const p = (path ? path + '/' : '') + h.name
+        if (h.kind === 'directory') await this.walk(p, out)
+        else out.push(p)
+      }
+      return out.sort()
+    },
+    async wipe() {
+      const r = await this.root()
+      const names = []
+      for await (const h of r.values()) names.push(h.name)
+      for (const n of names) { try { await r.removeEntry(n, { recursive: true }) } catch (e) {} }
+    }
+  }
+})()
+`
+
+/* ------------------------------------------------------------------ 主流程 */
+const shot = (p, name) => p.screenshot(join(SHOTS, name))
+mkdirSync(SHOTS, { recursive: true })
+
+const browser = await launchChrome({ port: PORT })
+let page
+const log = []
+function note(s) {
+  log.push(s)
+  console.log(s)
+}
+
+try {
+  page = await browser.newPage()
+  await page.setViewport(1440, 900)
+  await page.inject(INIT)
+
+  /* ---------- 0. 干净起点 ---------- */
+  section('0. 打开首页（真实 Chrome）')
+  await page.navigate(URL, { waitMs: 1500 })
+  check('页面加载且标题正确', (await page.evaluate('return document.title')).includes('写作'), await page.evaluate('return document.title'))
+
+  await page.evaluate(`
+    await window.__fs.wipe()
+    localStorage.clear()
+    await new Promise((r) => { const q = indexedDB.deleteDatabase('writer-fs'); q.onsuccess = q.onerror = q.onblocked = () => r() })
+    return true
+  `)
+  await page.reload(1800)
+
+  const homeText = await page.text()
+  check('首页渲染（离线写作工作台 / 新建作品）', homeText.includes('离线写作工作台') && homeText.includes('新建作品'))
+  check('浏览器被识别为支持 FSA（无「请用 Edge / Chrome」警告）', !homeText.includes('请用 Edge'))
+  await shot(page, '01-home.png')
+
+  /* ---------- 1. 新建作品 ---------- */
+  section('1. 新建作品（走真实 showDirectoryPicker → OPFS 句柄）')
+  await page.click('.actions button.primary')
+  await page.waitFor("document.querySelector('.new-box')", { label: '新建作品表单' })
+
+  await page.evaluate("const i = document.querySelectorAll('.new-box input')[0]; i.focus(); i.select(); return true")
+  await page.typeText(WORK)
+  const nameVal = await page.evaluate("return document.querySelectorAll('.new-box input')[0].value")
+  check('书名输入框接受真实键盘输入', nameVal === WORK, `实际「${nameVal}」`)
+
+  await page.evaluate("const i = document.querySelectorAll('.new-box input')[1]; i.focus(); i.select(); return true")
+  await page.typeText('验收员')
+
+  await page.click('.new-box .row button.primary')
+  await page.waitFor("document.querySelector('.bar')", { timeout: 15000, label: '进入写作界面' })
+  check('进入写作界面（顶栏出现）', true)
+
+  const rootDirs = await page.evaluate(`return await window.__fs.list(${JSON.stringify(WORK)})`)
+  const wantDirs = ['大纲/', '正文/', '记忆/', '设定/', '技能/']
+  check('标准目录已落盘', wantDirs.every((d) => rootDirs.includes(d)), JSON.stringify(rootDirs))
+  const infoMd = await page.evaluate(`return await window.__fs.read(${JSON.stringify(WORK + '/作品信息.md')})`)
+  check('作品信息.md 写入书名', infoMd.includes(WORK))
+  check('作品信息.md 写入作者', infoMd.includes('验收员'))
+  await shot(page, '02-new-work.png')
+
+  /* ---------- 2. 建章 ---------- */
+  section('2. 建章：新作品给得出可见入口')
+  // 这条是真实浏览器里才发现的问题：章节树默认收起，新作品一片空白
+  const treeVisible = await page.evaluate("return !!document.querySelector('.tree-body')")
+  check('新作品自动展开章节树（不再是一片空白）', treeVisible)
+  const blankVisible = await page.evaluate("return !!document.querySelector('.blank-start')")
+  check('编辑器给出「新建第一章」起步入口', blankVisible)
+
+  await page.evaluate("const i = document.querySelector('.blank-start .first-input'); i.focus(); return true")
+  await page.typeText(CH_TITLE)
+  await page.clickByText('.blank-start button', '新建第一章')
+  await page.waitFor("document.querySelectorAll('.tree-body .ch').length === 1", { timeout: 10000, label: '章节出现在树上（1 章）' })
+  const chCount = await page.evaluate("return document.querySelectorAll('.tree-body .ch').length")
+  check('章节出现在章节目录里', chCount === 1, `章节数 ${chCount}`)
+  const chTitle = await page.evaluate("return document.querySelector('.tree-body .ch-title')?.textContent || ''")
+  check('章节标题取自起步输入框', chTitle === CH_TITLE, `实际「${chTitle}」`)
+  check('起步入口在建成后自动收起', !(await page.evaluate("return !!document.querySelector('.blank-start')")))
+
+  /* ---------- 3. 写作 + 自动保存 ---------- */
+  section('3. 编辑器写作与自动保存')
+  await page.waitFor("document.querySelector('.ProseMirror')", { label: '编辑器挂载' })
+  await page.evaluate("document.querySelector('.ProseMirror').focus(); return true")
+  await page.typeText(BODY_LINES[0])
+  await page.pressKey('Enter')
+  await page.typeText(BODY_LINES[1])
+
+  const pmText = await page.evaluate("return document.querySelector('.ProseMirror').innerText")
+  check('正文进入编辑器', BODY_LINES.every((l) => pmText.includes(l)), JSON.stringify(pmText.slice(0, 80)))
+
+  const wordLabel = await page.evaluate("return Array.from(document.querySelectorAll('.center span')).map((s) => s.textContent).join(' | ')")
+  check('顶栏字数已更新（不是 0）', !/本章 0\b/.test(wordLabel), wordLabel)
+
+  // 等自动保存落地
+  await page.waitFor("document.querySelector('.save')?.textContent.includes('已保存')", { timeout: 8000, label: '自动保存完成' })
+  check('顶栏显示「已保存」', true)
+
+  const files = await page.evaluate(`return await window.__fs.walk(${JSON.stringify(WORK)})`)
+  note('    磁盘文件：' + JSON.stringify(files))
+  const chFile = files.find((f) => f.includes('正文/') && f.endsWith('.md'))
+  check('章节文件已写入 正文/', !!chFile, JSON.stringify(files))
+
+  const chRaw = chFile ? await page.evaluate(`return await window.__fs.read(${JSON.stringify(chFile)})`) : ''
+  check('落盘内容含正文', BODY_LINES.every((l) => chRaw.includes(l)), JSON.stringify(chRaw.slice(0, 120)))
+  check('章文件带 front matter（title/status）', /^---[\s\S]*title:/.test(chRaw) && chRaw.includes('status:'))
+  check('front matter 里 title 正确', chRaw.includes(`title: ${CH_TITLE}`))
+  check('默认状态为「待写」', chRaw.includes('status: 待写'), chRaw.split('\n').slice(0, 12).join(' | '))
+  await shot(page, '03-writing.png')
+
+  /* ---------- 4. 刷新恢复（句柄持久化） ---------- */
+  section('4. 刷新页面：目录句柄能否恢复')
+  await page.reload(3000)
+  const afterReload = await page.text()
+  const backInEditor = await page.evaluate("return !!document.querySelector('.bar')")
+  check('刷新后自动回到写作界面（不掉回首页）', backInEditor && !afterReload.includes('新建作品'), afterReload.slice(0, 120))
+  const pmAfter = await page.evaluate("return document.querySelector('.ProseMirror')?.innerText || ''")
+  check('刷新后正文内容完整恢复', BODY_LINES.every((l) => pmAfter.includes(l)), JSON.stringify(pmAfter.slice(0, 80)))
+  const chAfter = await page.evaluate("return document.querySelectorAll('.tree-body .ch').length")
+  check('刷新后章节树恢复', chAfter === 1, `章节数 ${chAfter}`)
+  const savedMark = await page.evaluate("return document.querySelector('.bk')?.textContent || ''")
+  check('刷新后书名正确', savedMark.includes(WORK), savedMark)
+  await shot(page, '04-after-reload.png')
+
+  /* ---------- 5. 五个视图 ---------- */
+  section('5. 五个主视图（Ctrl+1…5）')
+  const VIEWS = [
+    { key: '1', name: '写作', sel: '.ProseMirror' },
+    { key: '2', name: '看板', sel: '.board' },
+    { key: '3', name: '关系图', sel: '.graph' },
+    { key: '4', name: '时间线', sel: '.tl' },
+    { key: '5', name: '统计', sel: '.stats' }
+  ]
+  for (const v of VIEWS) {
+    await page.evaluate("document.body.focus(); return true")
+    await page.pressKey(v.key, { ctrl: true })
+    await sleep(500)
+    const ok = await page.evaluate(`return !!document.querySelector(${JSON.stringify(v.sel)})`)
+    const txt = await page.evaluate('return document.body.innerText.length')
+    check(`Ctrl+${v.key} 切到「${v.name}」且渲染成功`, ok && txt > 50, `sel=${v.sel} innerText=${txt}`)
+  }
+  /* ---------- 5.0b 稿纸宽度（回归）----------
+     这章正文只有几十个字，max-content 远小于可用宽度 ——
+     .editor-wrap 一旦丢了 flex:1 就会塌成一条几十像素的窄竖条贴在左边
+     （真实截图事故：整张稿纸只剩「归」字那么宽）。空章也要是一张居中的固定宽度稿纸。 */
+  await page.evaluate("document.body.focus(); return true")
+  await page.pressKey('1', { ctrl: true })
+  await sleep(400)
+  const paper = await page.evaluate(`return (() => {
+    const el = document.querySelector('.paper-col')
+    const sc = document.querySelector('.editor-scroll')
+    if (!el || !sc) return null
+    const r = el.getBoundingClientRect()
+    const s = sc.getBoundingClientRect()
+    // 居中与否要相对滚动容器的**内容区**量：窗外还有目录（232px）和右侧面板（348px），
+    // 拿 window.innerWidth 当参照永远「不居中」；而内容区右缘要用 clientWidth ——
+    // 稿纸底下的 45vh 底垫让滚动条常驻，rect.width 是连滚动条一起算的，会冤枉它 5px。
+    const contentRight = s.left + sc.clientWidth
+    return { w: r.width, leftGap: r.left - s.left, rightGap: contentRight - r.right }
+  })()`)
+  check('稿纸宽度固定（空章也不塌缩）', !!paper && paper.w >= 400, paper ? `宽 ${Math.round(paper.w)}px` : '没找到 .paper-col')
+  check(
+    '稿纸在写作区里水平居中',
+    !!paper && Math.abs(paper.leftGap - paper.rightGap) < 6,
+    paper ? `左空 ${Math.round(paper.leftGap)} / 右空 ${Math.round(paper.rightGap)}` : '—'
+  )
+
+  await page.pressKey('2', { ctrl: true })
+  await sleep(400)
+  await shot(page, '05-board.png')
+
+  /* ---------- 5.1 关系图：节点画得出来，而且拖得动 ─---------
+     为什么值得单开一段：关系图的节点曾经是**普通对象**，拖动与「重排」只改 n.x / n.y
+     这两个数字，Vue 收不到通知 —— 表现是「圆点拖着不动」，jsdom 冒烟也看不出来
+     （它只在别的东西碰巧触发重渲染时才跳过去）。所以这里发真鼠标事件，
+     断言 transform 真的跟着变。 */
+  section('5.1 关系图：拖动节点真的重绘')
+  const putEntry = (name, text) =>
+    `(async () => {
+      const d = await window.__fs.dir(${JSON.stringify(WORK + '/设定/人物设定')}, true)
+      const fh = await d.getFileHandle(${JSON.stringify(name)}, { create: true })
+      const w = await fh.createWritable()
+      await w.write(${JSON.stringify(text)})
+      await w.close()
+      return true
+    })()`
+  await page.evaluate(putEntry('汀兰.md', '---\ntype: character\nname: 汀兰\n---\n\n# 汀兰\n\n关联：[[云杉]]\n'))
+  await page.evaluate(putEntry('云杉.md', '---\ntype: character\nname: 云杉\n---\n\n# 云杉\n\n关联：[[汀兰]]\n'))
+
+  // OPFS 的目录枚举是「最终一致」的：createWritable close 之后，列目录偶尔要再过一小会儿
+  // 才能看见新文件。而关系图只在挂载时强刷一次设定库 —— 那一次读要是赶在元数据可见之前，
+  // 节点就永远是 0（这条 flake 四次里挂过三次）。真机上同样存在：在外部改完文件切回来，
+  // 偶尔会读到旧的空目录。所以先等到目录里真能列出这两个文件，再切视图，把顺序对齐。
+  await page.waitFor(
+    `(async () => (await window.__fs.list(${JSON.stringify(WORK + '/设定/人物设定')})).length >= 2)()`,
+    { timeout: 10000, label: '种下的设定文件在 OPFS 目录枚举里可见' }
+  )
+
+  // 切视图前先把焦点还给 body：这段不在 §5 那个循环里，没有先跑 body.focus()，
+  // 万一焦点停在某个输入框上，Ctrl+3 这一下就落不进全局派发（视图根本不切，
+  // `.graph` 永远不出现 —— 症状恰好是「节点数一直是 0」，看着像设定没加载，其实是没切过去）。
+  await page.evaluate("document.body.focus(); return true")
+  await page.pressKey('3', { ctrl: true })
+  await page.waitFor("!!document.querySelector('.graph')", { timeout: 10000, label: '切到关系图视图' })
+  await page.waitFor("document.querySelectorAll('.graph .node').length >= 2", { timeout: 10000, label: '关系图画出台子' })
+  const gNodes = await page.evaluate("return document.querySelectorAll('.graph .node').length")
+  const gLines = await page.evaluate("return document.querySelectorAll('.graph .edges line').length")
+  check('关系图把设定条目画成节点', gNodes >= 2, `节点 ${gNodes}`)
+  check('显式 [[双链]] 画成连线', gLines >= 1, `连线 ${gLines}`)
+  await shot(page, '06-graph.png')
+
+  const pt = await page.evaluate(`return (() => {
+    const c = document.querySelector('.graph .node circle')
+    const b = c.getBoundingClientRect()
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2, t: c.closest('.node').getAttribute('transform') }
+  })()`)
+  const mouse = (type, x, y, buttons) =>
+    page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, buttons })
+  await mouse('mousePressed', pt.x, pt.y, 1)
+  await mouse('mouseMoved', pt.x + 60, pt.y + 40, 1)
+  await sleep(200)
+  const dragged = await page.evaluate("return document.querySelector('.graph .node').getAttribute('transform')")
+  check(
+    '拖动节点后坐标跟着鼠标变（节点是响应式的）',
+    dragged !== pt.t && !!dragged,
+    `${pt.t} → ${dragged}（鼠标移动了 60,40）`
+  )
+  await mouse('mouseReleased', pt.x + 60, pt.y + 40, 0)
+  await sleep(150)
+  await page.pressKey('1', { ctrl: true })
+  await sleep(400)
+
+  /* ---------- 6. 右侧面板 ---------- */
+  section('6. 右侧九面板')
+  await page.pressKey('j', { ctrl: true })
+  await page.waitFor("document.querySelector('.dock')", { label: '右侧面板打开' })
+  const tabs = await page.evaluate("return Array.from(document.querySelectorAll('.dock .tabs button')).map((b) => b.textContent.trim())")
+  note('    面板页签：' + JSON.stringify(tabs))
+  check('九个离线面板都在（AI 未配置时不出现 AI 页签）', tabs.length >= 9 && !tabs.includes('上下文'))
+
+  for (const t of tabs) {
+    await page.clickByText('.dock .tabs button', t)
+    await sleep(320)
+    const len = await page.evaluate("return document.querySelector('.dock .body')?.innerText.trim().length || 0")
+    check(`面板「${t}」可渲染`, len > 0, `innerText 长度 ${len}`)
+  }
+  await page.clickByText('.dock .tabs button', '统计')
+  await sleep(400)
+  await shot(page, '07-dock-stats.png')
+  await page.clickByText('.dock .tabs button', '设定')
+  await sleep(400)
+  await shot(page, '08-dock-codex.png')
+
+  /* ---------- 7. 查找 / 专注 / 参考 ---------- */
+  section('7. 其它入口')
+  await page.pressKey('f', { ctrl: true })
+  await sleep(400)
+  const findShown = await page.evaluate("return document.body.innerText.includes('查找') || !!document.querySelector('[class*=find], .find-bar')")
+  check('Ctrl+F 打开查找', findShown)
+  await page.pressKey('Escape')
+  await sleep(200)
+
+  // 专注模式用 F11。这里刻意不再用 Ctrl+E 验：P3-D 把「正文内 Ctrl+B / Ctrl+E 归编辑器
+  // （加粗 / 行内代码）」这条规则立起来了，光标在正文里按 Ctrl+E 就不该再切专注。
+  await page.pressKey('F11')
+  await sleep(400)
+  const focused = await page.evaluate("return !!document.querySelector('.exit-focus')")
+  check('F11 进入专注模式', focused)
+  await page.pressKey('Escape')
+  await sleep(300)
+
+  // 反向验一次：光标在正文里按 Ctrl+E，应该是行内代码，而不是切专注模式
+  await page.evaluate("document.querySelector('.ProseMirror')?.focus(); return true")
+  await page.pressKey('e', { ctrl: true })
+  await sleep(400)
+  check('正文内 Ctrl+E 不再抢去切专注（让位给行内代码）', !(await page.evaluate("return !!document.querySelector('.exit-focus')")))
+
+  // 这条盯的是修掉的那个双重动作 bug：以前 Ctrl+B 会同时加粗并收起目录
+  const sidebarBefore = await page.evaluate("return !!document.querySelector('.tree-body')")
+  await page.pressKey('b', { ctrl: true })
+  await sleep(400)
+  const sidebarAfter = await page.evaluate("return !!document.querySelector('.tree-body')")
+  check('正文内 Ctrl+B 不会顺手把章节目录收起来', sidebarBefore && sidebarBefore === sidebarAfter, `${sidebarBefore} → ${sidebarAfter}`)
+
+  await page.clickByText('.right button', '参考')
+  await sleep(500)
+  const refOpen = await page.evaluate("return document.body.innerText.includes('参考') && document.querySelectorAll('.bar').length === 1")
+  check('「参考」按钮可开合（未崩溃）', refOpen)
+  await page.clickByText('.right button', '参考')
+  await sleep(300)
+
+  /* ---------- 7.5 章节树的 ＋：应用内对话框（P3-E 起不再用原生 prompt） ---------- */
+  section('7.5 章节树 ＋：应用内对话框新建第二章')
+  const clickPlus = () =>
+    page.evaluate(`
+      const btns = Array.from(document.querySelectorAll('.tree-body .btn-icon')).filter((b) => b.textContent.trim() === '＋')
+      if (btns[0]) btns[0].click()
+      return true
+    `)
+  await clickPlus()
+  await page.waitFor("document.querySelector('.dlg-mask')", { timeout: 6000, label: '应用内对话框弹出' })
+
+  // 这条是 P3-E 的核心：弹出的必须是页面里的对话框，而不是浏览器的 prompt
+  check('建章走应用内对话框，没有触发任何原生弹窗', page.dialogs.length === 0, JSON.stringify(page.dialogs))
+  const dlgHead = await page.evaluate("return document.querySelector('.dlg-mask .dlg-head')?.innerText.trim() || ''")
+  check('对话框标题正确', dlgHead.includes('新建章节'), dlgHead)
+  const dlgPlaceholder = await page.evaluate("return document.querySelector('.dlg-mask input')?.placeholder || ''")
+  check('输入框给出「留空会得到什么名字」的提示', dlgPlaceholder.includes('第'), dlgPlaceholder)
+  check('刚打开时没有红色报错（用户还没动手，不该先吓人）', !(await page.evaluate("return !!document.querySelector('.dlg-mask .dlg-err')")))
+  await shot(page, '19-app-dialog.png')
+
+  // 原生 prompt 给不了的约束：空着不让提交
+  const emptyOkDisabled = await page.evaluate("const b = Array.from(document.querySelectorAll('.dlg-foot button')).pop(); return !!b.disabled")
+  check('空输入时「确定」是禁用的（原生 prompt 做不到）', emptyOkDisabled)
+  // 点一下被禁用的确定 → 什么也不该发生；错误文案则在用户动手后才出现
+  const errAfterTry = await page.evaluate("return document.querySelector('.dlg-mask .dlg-err')?.innerText.trim() || ''")
+  check('空输入时给出「不能为空」这类可读原因', errAfterTry === '' || errAfterTry.includes('不能为空'), errAfterTry)
+
+  await page.evaluate("const i = document.querySelector('.dlg-mask input'); i.focus(); return true")
+  await page.typeText('重逢')
+  await sleep(250)
+  const typed = await page.evaluate("return document.querySelector('.dlg-mask input')?.value || ''")
+  check('对话框输入框收到了文字', typed === '重逢', typed)
+  const okEnabled = await page.evaluate("const b = Array.from(document.querySelectorAll('.dlg-foot button')).pop(); return !b.disabled")
+  check('填了标题后「确定」变为可点', okEnabled)
+
+  // 回车直接提交，手感跟原生 prompt 一样
+  await page.pressKey('Enter')
+  await page.waitFor("document.querySelectorAll('.tree-body .ch').length === 2", { timeout: 8000, label: '第二章出现（2 章）' })
+  check('回车即提交，对话框自动关闭', !(await page.evaluate("return !!document.querySelector('.dlg-mask')")))
+  check('章节树 ＋ 能建出第二章', (await page.evaluate("return document.querySelectorAll('.tree-body .ch').length")) === 2)
+  const files2 = await page.evaluate(`return await window.__fs.list(${JSON.stringify(WORK + '/正文')})`)
+  check('第二章文件已落盘（无 .crswap 临时文件残留）', files2.length === 2 && !files2.some((f) => f.includes('.crswap')), JSON.stringify(files2))
+
+  // 取消路径：Esc 关掉，不该多出章节（以前原生 confirm 的取消做不到被验收）
+  await clickPlus()
+  await page.waitFor("document.querySelector('.dlg-mask')", { timeout: 6000, label: '第二次弹出对话框' })
+  await page.pressKey('Escape')
+  await sleep(300)
+  check('Esc 关得掉对话框', !(await page.evaluate("return !!document.querySelector('.dlg-mask')")))
+  check('取消后章节数不变（没偷偷建出空章）', (await page.evaluate("return document.querySelectorAll('.tree-body .ch').length")) === 2)
+  check('全程零原生弹窗', page.dialogs.length === 0, JSON.stringify(page.dialogs))
+
+  /* ---------- 7.6 切章后编辑区内容要对得上 ---------- */
+  section('7.6 章节切换：正文不能串章')
+  // 这条对应一个真浏览器里才暴露的 bug：selectChapter 先改 currentId 再读正文，
+  // 编辑器 watcher 会拿到上一章的内容。
+  await page.evaluate("document.querySelector('.tree-body .ch-title').click(); return true")
+  await sleep(600)
+  const back1 = await page.evaluate("return document.querySelector('.ProseMirror')?.innerText || ''")
+  check('切回第一章显示的是第一章正文', BODY_LINES.every((l) => back1.includes(l)), JSON.stringify(back1.slice(0, 80)))
+  const head1 = await page.evaluate("return document.querySelector('.ch-title')?.textContent || ''")
+  check('标题跟随切换到第一章', head1 === CH_TITLE, head1)
+
+  await page.evaluate(`
+    const chs = Array.from(document.querySelectorAll('.tree-body .ch'))
+    chs[1].click()
+    return true
+  `)
+  await sleep(600)
+  const onCh2 = await page.evaluate("return document.querySelector('.ProseMirror')?.innerText || ''")
+  check('切到第二章不再残留第一章正文', !onCh2.includes(BODY_LINES[0]), JSON.stringify(onCh2.slice(0, 80)))
+
+  /* ---------- 7.7 导入已有稿件 ---------- */
+  section('7.7 导入已有稿件（真实文件输入框）')
+  const fx = writeFixtures()
+  await page.clickByText('.right button', '导入稿件')
+  await page.waitFor("document.querySelector('.dialog')", { label: '导入对话框打开' })
+
+  await page.setFileInput('.dialog input[type=file]', [fx.utf8])
+  await page.waitFor("document.querySelectorAll('.dialog .ch-row').length === 2", { timeout: 8000, label: '预览出 2 章' })
+  const encTag = await page.evaluate("return document.querySelector('.dialog .meta')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check('UTF-8 稿件被识别为 UTF-8', /UTF-8/.test(encTag), encTag)
+  const rows = await page.evaluate(
+    "return Array.from(document.querySelectorAll('.dialog .ch-row')).map((r) => r.innerText.replace(/\\s+/g, ' ').trim())"
+  )
+  check('预览列出两章且标题已去掉「第X章」前缀', rows.length === 2 && rows[0].includes('启程') && !rows[0].includes('第一章'), JSON.stringify(rows))
+  await shot(page, '10-import-preview.png')
+
+  await page.evaluate(
+    "const i = Array.from(document.querySelectorAll('.dialog input')).find((x) => (x.placeholder || '').includes('旧稿')); i.focus(); return true"
+  )
+  await page.typeText('旧稿')
+  await page.clickByText('.dialog button', '导入 2 章')
+  await page.waitFor("document.querySelectorAll('.tree-body .ch').length === 4", { timeout: 20000, label: '章节树变成 4 章' })
+  const chNow = await page.evaluate("return document.querySelectorAll('.tree-body .ch').length")
+  check('导入后章节树变成 4 章（原有 2 章没被动）', chNow === 4, `章节数 ${chNow}`)
+  const allBody = await page.evaluate(`return await window.__fs.walk(${JSON.stringify(WORK + '/正文')})`)
+  const importedFiles = allBody.filter((p) => p.includes('旧稿') && /第\d+章.*\.md$/.test(p))
+  const volOutline = allBody.filter((p) => p.includes('旧稿') && p.endsWith('卷纲.md'))
+  check('导入的 2 章落进新建的卷目录', importedFiles.length === 2, JSON.stringify(allBody))
+  check('新卷自动生成 卷纲.md', volOutline.length === 1, JSON.stringify(allBody))
+  const importedRaw = await page.evaluate(`return await window.__fs.read(${JSON.stringify(importedFiles[0] || '')})`)
+  check('导入文件带 front matter 且按「草稿」入库', /^---[\s\S]*title:/.test(importedRaw) && importedRaw.includes('status: 草稿'), importedRaw.split('\n').slice(0, 8).join(' | '))
+  check('导入的正文内容完整落盘', importedRaw.includes('船靠岸的时候，雨还没停。'), importedRaw.slice(0, 160))
+  await shot(page, '11-imported.png')
+
+  // 同一份内容换 GBK 再走一遍：编码判断是这一步最容易出错的地方
+  await page.setFileInput('.dialog input[type=file]', [fx.gbk])
+  await page.waitFor("document.querySelectorAll('.dialog .ch-row').length === 2", { timeout: 8000, label: 'GBK 预览出 2 章' })
+  const encTag2 = await page.evaluate("return document.querySelector('.dialog .meta')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check('GBK 稿件被认出是 GB 系编码（没有静默变成乱码）', /GB/i.test(encTag2), encTag2)
+  const rows2 = await page.evaluate(
+    "return Array.from(document.querySelectorAll('.dialog .ch-row')).map((r) => r.innerText.replace(/\\s+/g, ' ').trim())"
+  )
+  check('GBK 稿件的章标题解码正确', rows2.some((r) => r.includes('启程')), JSON.stringify(rows2))
+  const dlgText = await page.evaluate("return document.querySelector('.dialog')?.innerText || ''")
+  check('GBK 稿件没有触发乱码告警', !dlgText.includes('无法识别'), dlgText.slice(0, 120))
+
+  await page.click('.dialog .head .btn-icon')
+  await sleep(300)
+  check('导入对话框可关闭', !(await page.evaluate("return !!document.querySelector('.dialog')")))
+
+
+  /* ---------- 7.7b 导入大纲 / 卷纲 / 章纲 ---------- */
+  section('7.7b 导入大纲（粘进去 → 认层级 → 写卷纲与章纲）')
+  await page.clickByText('.right button', '导入大纲')
+  await page.waitFor("document.querySelector('.dialog')", { label: '导入大纲对话框打开' })
+  const OUTLINE_MD = [
+    '# 第一卷 启程',
+    '卷目标：回到原点',
+    '',
+    '## 第一章 雪夜',
+    '本章目标：立住人物与处境',
+    '雪夜回乡。',
+    '',
+    '## 第二章 重逢',
+    '本章目标：埋下旧怨',
+    ''
+  ].join('\n')
+  await page.evaluate(
+    `const ta = document.querySelector('.dialog textarea'); ta.value = ${JSON.stringify(OUTLINE_MD)}; ta.dispatchEvent(new Event('input')); return true`
+  )
+  await page.waitFor("document.querySelectorAll('.dialog .ch-row').length >= 1", { timeout: 8000, label: '预览出一卷' })
+  const ovText = await page.evaluate("return document.querySelector('.dialog').innerText")
+  check('粘进去就认出卷与章', ovText.includes('第一卷 启程') && /2 章/.test(ovText), ovText.slice(0, 200))
+  check('写进哪个文件写在按钮旁边（作者不用猜）', ovText.includes('卷纲.md'), ovText.slice(0, 200))
+  await shot(page, '11b-outline-import.png')
+
+  await page.clickByText('.dialog button', '导入 1 卷的卷纲')
+  await page.waitFor("document.querySelectorAll('.tree-body .ch').length === 6", { timeout: 20000, label: '章节树加上导入的 2 章' })
+  const afterVol = await page.evaluate(`return await window.__fs.walk(${JSON.stringify(WORK + '/正文')})`)
+  const volFile = afterVol.filter((x) => x.includes('第一卷') && x.endsWith('卷纲.md'))
+  check('卷目录与卷纲都建出来了', volFile.length === 1, JSON.stringify(afterVol))
+  const vgRaw = await page.evaluate(`return await window.__fs.read(${JSON.stringify(volFile[0] || '')})`)
+  check('卷纲的 front matter 里写了卷目标', vgRaw.includes('target: 回到原点'), vgRaw.split('\n').slice(0, 10).join(' | '))
+  check('卷纲正文里有章节安排', vgRaw.includes('第一章 雪夜') && vgRaw.includes('埋下旧怨'), vgRaw.slice(0, 200))
+  const volChs = afterVol.filter((x) => x.includes('第一卷') && /第\d+章.*\.md$/.test(x))
+  check('卷下建成 2 个空章坑位', volChs.length === 2, JSON.stringify(volChs))
+  const emptyRaw = await page.evaluate(`return await window.__fs.read(${JSON.stringify(volChs[0] || '')})`)
+  check('坑位是空的 —— 导入大纲不替作者写正文', !emptyRaw.includes('雪夜回乡'), emptyRaw.slice(0, 160))
+
+  // 同一个大纲再导一次，这次写章纲：只补「本章目标」，不重复建章
+  await page.evaluate(
+    "const b = Array.from(document.querySelectorAll('.dialog button')).find((x) => (x.textContent || '').trim() === '章纲'); b.click(); return true"
+  )
+  await sleep(200)
+  await page.clickByText('.dialog button', '导入 2 条章纲')
+  await page.waitFor(
+    "document.querySelectorAll('.tree-body .ch').length === 6",
+    { timeout: 20000, label: '章纲导入后章数不变（没有重复建章）' }
+  )
+  const chTreeNow = await page.evaluate("return document.querySelectorAll('.tree-body .ch').length")
+  check('章纲导入后章数还是 6（对上已有章节只补目标）', chTreeNow === 6, `章节数 ${chTreeNow}`)
+  const chTargetRaw = await page.evaluate(`return await window.__fs.read(${JSON.stringify(volChs[0] || '')})`)
+  check('章纲写进了「本章目标」', chTargetRaw.includes('target: 立住人物与处境'), chTargetRaw.split('\n').slice(0, 10).join(' | '))
+  check('章纲没有动正文', !chTargetRaw.includes('雪夜回乡'), chTargetRaw.slice(0, 200))
+  await shot(page, '11c-outline-imported.png')
+
+  await page.click('.dialog .head .btn-icon')
+  await sleep(300)
+  check('导入大纲对话框可关闭', !(await page.evaluate("return !!document.querySelector('.dialog')")))
+
+  /* ---------- 7.8 备份与恢复 ---------- */
+  section('7.8 备份与恢复（真的把 zip 下载下来验）')
+  const dlDir = join(FIXTURES, 'downloads')
+  await page.allowDownloads(dlDir)
+
+  await page.clickByText('.right button', '设置')
+  await page.waitFor("document.querySelector('.dialog')", { label: '设置对话框' })
+  await page.clickByText('.dialog .head button', '通用')
+  await sleep(250)
+  await page.clickByText('.dialog button', '备份与存储…')
+  await page.waitFor("document.querySelector('.backup-mask')", { label: '备份对话框' })
+  check('设置 → 通用 里能打开「备份与存储」', true)
+
+  await page.clickByText('.backup-mask button', '打包')
+  await page.waitFor("document.querySelector('.backup-mask')?.innerText.includes('已打包')", { timeout: 20000, label: '打包完成' })
+  const packText = await page.evaluate("return document.querySelector('.backup-mask')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check('打包结果给出文件数与体积', /已打包 \d+ 个文件/.test(packText), packText.slice(0, 200))
+  await shot(page, '12-backup.png')
+
+  await page.clickByText('.backup-mask button', '下载 zip')
+  const zipPath = await page.waitForDownload(dlDir, /\.zip$/)
+  const zipBuf = readFileSync(zipPath)
+  check('备份文件落到了磁盘', zipBuf.length > 200, `${zipBuf.length} 字节：${zipPath.split(/[\\/]/).pop()}`)
+  check('产物是合法 zip（PK 头 + 中央目录结束记录）', zipBuf[0] === 0x50 && zipBuf[1] === 0x4b && zipBuf.includes(Buffer.from([0x50, 0x4b, 0x05, 0x06])))
+  // 条目名按 UTF-8 存进 zip；中文名必须带 bit 11 的 UTF-8 标志，否则资源管理器解出乱码目录名
+  const has = (s) => zipBuf.includes(Buffer.from(s, 'utf8'))
+  check('zip 里有备份清单', has('备份信息.json'))
+  check('zip 里有正文与记忆目录的条目', has('正文/第001章 启程.md') && has('记忆/状态表.md'), '')
+  check('条目名声明了 UTF-8 标志位（zip 通用位 bit 11）', (zipBuf[6] | (zipBuf[7] << 8)) === 0x0800, `flags=0x${(zipBuf[6] | (zipBuf[7] << 8)).toString(16)}`)
+
+  // 从这份备份恢复：先预览，再以「跳过同名」模式恢复
+  await page.clickByText('.backup-mask button', '从备份恢复')
+  await sleep(250)
+  await page.setFileInput('.backup-mask input[type=file]', [zipPath])
+  await page.waitFor("document.querySelector('.backup-mask')?.innerText.includes('个文件可恢复')", { timeout: 10000, label: '备份预览' })
+  const rvText = await page.evaluate("return document.querySelector('.backup-mask')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check('恢复前能看到备份来自哪本书', rvText.includes(WORK), rvText.slice(0, 220))
+  check('恢复前列出可恢复文件数', /个文件可恢复/.test(rvText), rvText.slice(0, 220))
+
+  await page.evaluate(`
+    const sel = document.querySelector('.backup-mask select')
+    sel.value = 'skip'
+    sel.dispatchEvent(new Event('change'))
+    return true
+  `)
+  await page.clickByText('.backup-mask button', '开始恢复')
+  await sleep(200)
+  await page.clickByText('.backup-mask button', '确认恢复（再点一次）')
+  await page.waitFor("document.querySelector('.backup-mask')?.innerText.includes('已恢复')", { timeout: 20000, label: '恢复完成' })
+  const rdone = await page.evaluate("return document.querySelector('.backup-mask')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check('恢复按 skip 模式执行并报出结果', /已恢复 \d+ 个文件，跳过 \d+ 个已存在/.test(rdone), rdone.slice(0, 260))
+  check('恢复后作品内容仍完整（没被清空）', (await page.evaluate(`return await window.__fs.walk(${JSON.stringify(WORK)})`)).length >= 8)
+  await shot(page, '13-restore.png')
+
+  // 磁盘占用
+  await page.clickByText('.backup-mask button', '磁盘占用')
+  await sleep(600)
+  const usageText = await page.evaluate("return document.querySelector('.backup-mask')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check('占用页列出正文目录与体积', /正文/.test(usageText) && /\d/.test(usageText), usageText.slice(0, 240))
+  check('占用页给出快照统计', /快照 \d+ 份/.test(usageText), usageText.slice(0, 300))
+  check('占用页能改自动快照策略', await page.evaluate("return !!document.querySelector('.backup-mask')?.innerText.includes('每章最多保留')"))
+  await shot(page, '14-usage.png')
+
+  // 关掉备份对话框与设置对话框
+  await page.click('.backup-mask .head .btn-icon')
+  await sleep(250)
+  await page.click('.dialog .head .btn-icon')
+  await sleep(250)
+  check('设置与备份对话框都能关掉', !(await page.evaluate("return !!document.querySelector('.backup-mask') || !!document.querySelector('.dialog')")))
+
+  /* ---------- 7.9 P3-D：筛选 / 快捷键一览 / 编辑位置导航 / 主题 ---------- */
+  section('7.9 写作体验补完：章节筛选 · 快捷键一览 · 导航历史 · 主题')
+  // 到这一步树上一共 6 章（原始 2 章 + 导入 2 章 + 大纲导入建的 2 个空章），
+  // 而且标题有重名（启程/重逢 各两份）—— 所以期望值一律现算，不写死数字。
+  const treeTitles = await page.evaluate("return Array.from(document.querySelectorAll('.tree-body .ch-title')).map((t) => t.textContent.trim())")
+  const treeStatus = await page.evaluate("return Array.from(document.querySelectorAll('.tree-body .ch .st')).map((s) => s.textContent.trim())")
+  check('筛选前章节树有 6 章可筛', treeTitles.length === 6, JSON.stringify(treeTitles))
+
+  // 关键词筛选：列表收窄到命中项 + 命中高亮 + 计数
+  const term = '重逢'
+  const expectHits = treeTitles.filter((t) => t.includes(term)).length
+  check('样例里「重逢」是重名章，正好用来验「命中 N / 共 M」', expectHits >= 1 && expectHits < treeTitles.length, String(expectHits))
+  await page.evaluate("const i = document.querySelector('.filter-input'); i.focus(); return true")
+  await page.typeText(term)
+  await page.waitFor(`document.querySelectorAll('.tree-body .ch').length === ${expectHits}`, { timeout: 8000, label: `筛选后只剩 ${expectHits} 章` })
+  const fInfo = await page.evaluate("return document.querySelector('.filter-info')?.textContent.replace(/\\s+/g, ' ').trim() || ''")
+  check('筛选框能收窄章节列表', (await page.evaluate("return document.querySelectorAll('.tree-body .ch').length")) === expectHits)
+  check('筛选给出「命中 N / 共 M 章」计数', new RegExp(`命中 ${expectHits} / 共 ${treeTitles.length} 章`).test(fInfo), fInfo)
+  const hl = await page.evaluate("return Array.from(document.querySelectorAll('.tree-body mark.hl')).map((m) => m.textContent).join(',')")
+  check('命中的关键词在树里高亮', hl.includes(term), hl)
+  const shownTitles = await page.evaluate("return Array.from(document.querySelectorAll('.tree-body .ch-title')).map((t) => t.textContent.trim())")
+  check('筛出来的每一章标题都含关键词', shownTitles.length === expectHits && shownTitles.every((x) => x.includes(term)), JSON.stringify(shownTitles))
+  await shot(page, '15-tree-filter.png')
+
+  // 状态筛选：语法能单独用，也能和关键词叠加
+  const status = treeStatus[0]
+  await page.evaluate("const i = document.querySelector('.filter-input'); i.focus(); i.select(); return true")
+  await page.typeText(`#${status}`)
+  await sleep(400)
+  const fInfo2 = await page.evaluate("return document.querySelector('.filter-info')?.textContent.replace(/\\s+/g, ' ').trim() || ''")
+  check('#状态 筛选生效并回显条件', fInfo2.includes(`状态 ${status}`), fInfo2)
+  const shownStatus = await page.evaluate("return Array.from(document.querySelectorAll('.tree-body .ch .st')).map((s) => s.textContent.trim())")
+  check('状态筛选后剩下的章确实都是该状态', shownStatus.length > 0 && shownStatus.every((s) => s === status), JSON.stringify(shownStatus))
+
+  await page.pressKey('Escape')
+  await page.waitFor(`document.querySelectorAll('.tree-body .ch').length === ${treeTitles.length}`, { timeout: 8000, label: 'Esc 清空筛选' })
+  check('Esc 清空筛选、列表恢复', !(await page.evaluate("return !!document.querySelector('.filter-input').value")))
+
+  // Ctrl+P：把焦点直接怼进筛选框
+  await page.evaluate("document.querySelector('.ProseMirror')?.focus(); return true")
+  await page.pressKey('p', { ctrl: true })
+  await sleep(300)
+  const focusCls = await page.evaluate("return document.activeElement?.className || ''")
+  check('Ctrl+P 跳到章节筛选框', focusCls.includes('filter-input'), focusCls)
+  await page.evaluate("document.activeElement?.blur?.(); return true")
+
+  // 快捷键一览：`?` 打开，kbd 渲染，搜索能筛，Esc 关
+  await page.pressKey('?', { shift: true })
+  await page.waitFor("document.querySelector('.help-mask')", { timeout: 6000, label: '快捷键一览打开' })
+  const helpText = await page.evaluate("return document.querySelector('.help-mask')?.innerText || ''")
+  check('按 ? 打开快捷键一览', helpText.includes('快捷键一览'))
+  check('一览里出现 Ctrl + S 与 Alt + ←', helpText.includes('Ctrl + S') && helpText.includes('Alt + ←'), helpText.slice(0, 160))
+  check('一览按 写作/正文编辑器/导航/界面 分组', ['写作', '正文编辑器', '导航', '界面'].every((g) => helpText.includes(g)))
+  const kbdCount = await page.evaluate("return document.querySelectorAll('.help-mask kbd').length")
+  check('一览渲染出十几个键帽', kbdCount >= 15, String(kbdCount))
+  await shot(page, '16-shortcuts.png')
+
+  await page.evaluate("const i = document.querySelector('.help-mask .filter input'); i.focus(); return true")
+  await page.typeText('导航')
+  await sleep(300)
+  const narrowed = await page.evaluate("return document.querySelector('.help-mask')?.innerText || ''")
+  check('一览可以按关键词筛', narrowed.includes('Alt + ←') && !narrowed.includes('Ctrl + S'), narrowed.slice(0, 160))
+  await page.pressKey('Escape') // 第一下只清搜索（输入框自己 stopPropagation 了）
+  await sleep(250)
+  check('第一下 Esc 只清搜索、面板还在', await page.evaluate("return !!document.querySelector('.help-mask') && !document.querySelector('.help-mask .filter input').value"))
+  await page.pressKey('Escape')
+  await page.waitFor("!document.querySelector('.help-mask')", { timeout: 5000, label: 'Esc 关闭一览' })
+  check('第二下 Esc 关闭一览', true)
+
+  // 编辑位置导航：点两章 → Ctrl+Alt+← 退回上一处 → Ctrl+Alt+→ 再前进
+  await page.evaluate("document.querySelectorAll('.tree-body .ch')[0].click(); return true")
+  await sleep(700)
+  const spotA = await page.evaluate("return document.querySelector('.head-line .ch-title')?.textContent || ''")
+  await page.evaluate("document.querySelectorAll('.tree-body .ch')[3].click(); return true")
+  await sleep(700)
+  const spotB = await page.evaluate("return document.querySelector('.head-line .ch-title')?.textContent || ''")
+  check('两次点章后停在第 4 章', spotB !== spotA && !!spotB, `${spotA} → ${spotB}`)
+  const navEnabled = await page.evaluate("return Array.from(document.querySelectorAll('button.nav')).map((b) => b.disabled)")
+  check('工具栏「后退」此时可点、「前进」不可点', navEnabled[0] === false && navEnabled[1] === true, JSON.stringify(navEnabled))
+  const backTip = await page.evaluate("return document.querySelector('button.nav')?.title || ''")
+  check('「后退」按钮的提示写明要去哪一章', backTip.includes(spotA) && backTip.includes('Alt'), backTip)
+
+  await page.pressKey('ArrowLeft', { ctrl: true, alt: true })
+  await sleep(900)
+  const backTo = await page.evaluate("return document.querySelector('.head-line .ch-title')?.textContent || ''")
+  check('Ctrl+Alt+← 回到上一个编辑位置', backTo === spotA, `${backTo} vs ${spotA}`)
+  const afterBack = await page.evaluate("return Array.from(document.querySelectorAll('button.nav')).map((b) => b.disabled)")
+  check('后退之后「前进」变为可点', afterBack[1] === false, JSON.stringify(afterBack))
+
+  await page.pressKey('ArrowRight', { ctrl: true, alt: true })
+  await sleep(900)
+  const fwdTo = await page.evaluate("return document.querySelector('.head-line .ch-title')?.textContent || ''")
+  check('Ctrl+Alt+→ 前进回第 4 章', fwdTo === spotB, `${fwdTo} vs ${spotB}`)
+  await shot(page, '17-nav-history.png')
+
+  // 历史不止一格：一路后退要能连续走多步，最后退到底按钮变灰
+  await page.evaluate("document.querySelectorAll('.tree-body .ch')[0].click(); return true")
+  await sleep(700)
+  let backSteps = 0
+  for (let i = 0; i < 14; i++) {
+    const can = await page.evaluate("return !document.querySelector('button.nav').disabled")
+    if (!can) break
+    await page.pressKey('ArrowLeft', { ctrl: true, alt: true })
+    await sleep(450)
+    backSteps++
+  }
+  check('后退能连续走多步（历史不只一格）', backSteps >= 2, `退了 ${backSteps} 步`)
+  check('退到底后「后退」按钮变灰', await page.evaluate("return document.querySelector('button.nav').disabled"))
+  check('退到底后编辑区仍有内容（回放不会把章节弄空）', (await page.evaluate("return (document.querySelector('.ProseMirror')?.innerText || '').length")) > 0)
+
+  // 主题：Ctrl+. 轮换 → 类要挂到 <html>（body 背景与滚动条才会跟着走）
+  const themeSteps = []
+  for (let i = 0; i < 3; i++) {
+    await page.pressKey('.', { ctrl: true })
+    await sleep(250)
+    themeSteps.push(
+      await page.evaluate("return [document.documentElement.dataset.theme, document.documentElement.classList.contains('theme-dark'), document.documentElement.style.colorScheme].join('|')")
+    )
+  }
+  check('Ctrl+. 依次切到 护眼 / 夜间 / 白底', themeSteps.map((s) => s.split('|')[0]).join('>') === 'sepia>dark>light', themeSteps.join(' , '))
+  check('夜间主题：html 上有 theme-dark 且 color-scheme=dark', themeSteps[1].includes('true|dark'), themeSteps[1])
+  check('切回白底后不留主题类', !themeSteps[2].includes('true'), themeSteps[2])
+
+  // 主题要真的落到颜色上（不是只换了个类名）：比夜间与白底的正文底色
+  const paperBg = () => page.evaluate("return getComputedStyle(document.querySelector('.paper') || document.body).backgroundColor")
+  const bgLight = await paperBg()
+  await page.pressKey('.', { ctrl: true }) // → 护眼
+  await sleep(250)
+  await page.pressKey('.', { ctrl: true }) // → 夜间
+  await sleep(300)
+  const bgDark = await paperBg()
+  check('夜间模式的正文底色确实变暗了', bgDark !== bgLight && /rgb\((\d+)/.test(bgDark) && Number(bgDark.match(/rgb\((\d+)/)[1]) < 90, `${bgLight} → ${bgDark}`)
+  const chromeBg = await page.evaluate("return getComputedStyle(document.body).backgroundColor")
+  check('夜间模式下 body 底色也变了（说明类挂在 html 上生效）', chromeBg !== 'rgb(255, 255, 255)', chromeBg)
+  await shot(page, '18-theme-dark.png')
+  const forced = await page.evaluate("return !!document.querySelector('.theme-dark .paper') || document.documentElement.classList.contains('theme-dark')")
+  check('夜间主题类生效于整页', forced)
+  await page.pressKey('.', { ctrl: true }) // → 白底
+  await sleep(300)
+  check('再按一次回到白底', (await page.evaluate("return document.documentElement.dataset.theme")) === 'light')
+
+  /* ---------- 7.10 章节目录的键盘操作（P3-E） ---------- */
+  section('7.10 章节目录：焦点进列表后全键盘翻章')
+  await page.evaluate("document.querySelector('.tree-body').focus(); return true")
+  await sleep(250)
+  const treeFocus = await page.evaluate("return document.activeElement?.className || ''")
+  check('目录列表能拿到键盘焦点', treeFocus.includes('tree-body'), treeFocus)
+
+  const cursorKey = () => page.evaluate("return document.querySelector('.ch.cursor')?.getAttribute('data-key') || ''")
+  const activeKey = () => page.evaluate("return document.querySelector('.tree-body .ch.active')?.getAttribute('data-key') || ''")
+  const cursorCls = () => page.evaluate("return document.querySelector('.cursor')?.className || ''")
+
+  check('聚焦时光标自动落在当前章上', (await cursorKey()) === (await activeKey()), `${await cursorKey()} vs ${await activeKey()}`)
+
+  await page.pressKey('Home')
+  await sleep(250)
+  check('Home 跳到列表最上面（卷标题行）', (await cursorCls()).includes('vol-line'), await cursorCls())
+
+  await page.pressKey('ArrowDown')
+  await sleep(200)
+  const rowA = await cursorKey()
+  await page.pressKey('ArrowDown')
+  await sleep(200)
+  const rowB = await cursorKey()
+  check('↓ 逐行往下走，不会卡住', !!rowA && rowB !== rowA, `${rowA} → ${rowB}`)
+  await page.pressKey('ArrowUp')
+  await sleep(200)
+  check('↑ 能退回上一行', (await cursorKey()) === rowA, `${await cursorKey()} vs ${rowA}`)
+
+  await page.pressKey('End')
+  await sleep(250)
+  const lastKey = await cursorKey()
+  check('End 跳到最后一章', !!lastKey, lastKey)
+
+  await page.pressKey('Enter')
+  await sleep(700)
+  check('回车打开光标所在的那一章', (await activeKey()) === lastKey, `${await activeKey()} vs ${lastKey}`)
+
+  const treeCountBefore = await page.evaluate("return document.querySelectorAll('.tree-body .ch').length")
+
+  await page.pressKey('F2')
+  await sleep(400)
+  check('F2 就地重命名（该行标题变成输入框）', await page.evaluate("return !!document.querySelector('.tree-body .ch.cursor input')"))
+  // 这是一个真浏览器里才暴露的缺陷：改名框是 v-if 现渲的，autofocus 属性对动态插入的元素不生效，
+  // 于是按完 F2 光标还留在列表上，敲字没反应 —— 所以这里同时盯住「焦点真的进了输入框」
+  check('改名框自己拿到焦点（否则按完 F2 敲字没反应）', await page.evaluate("return document.activeElement?.tagName === 'INPUT'"), await page.evaluate("return document.activeElement?.tagName || ''"))
+
+  // 改成新名字并回车：名字要真的写进章节树（不是只改了个输入框的值）
+  await page.evaluate("const i = document.querySelector('.tree-body .ch input'); i.focus(); i.value = ''; i.dispatchEvent(new Event('input')); return true")
+  await page.typeText('改过名的章')
+  await page.pressKey('Enter')
+  await sleep(900)
+  const afterRename = await page.evaluate("return Array.from(document.querySelectorAll('.tree-body .ch-title')).map((t) => t.textContent.trim())")
+  check('回车确认后新名字出现在章节树里', afterRename.includes('改过名的章'), JSON.stringify(afterRename))
+  check('改名后章节数不变（是改名，不是新建/删除）', afterRename.length === treeCountBefore, `${afterRename.length} vs ${treeCountBefore}`)
+  check('改名后焦点回到列表（能接着用方向键）', (await page.evaluate("return document.activeElement?.className || ''")).includes('tree-body'))
+  await shot(page, '20-tree-keyboard.png')
+
+  /* ---------- 7.10b 快照回滚：屏幕和磁盘必须一起变 ---------- */
+  section('7.10b 快照回滚：编辑器与磁盘必须同时改（不然下一个按键就把回滚冲掉）')
+  // 曾经的写法是「读快照 → 只写 state.content」。编辑器**只在 currentId 变化时**
+  // 才从 state.content 同步一次，而回滚时 id 没变 —— 结果是屏幕上还是回滚前的正文、
+  // 盘上却已经是快照内容。作者随手敲一个字，自动保存就按屏幕上的旧正文把回滚**覆盖回去**：
+  // 看着成功了，改动没了。这种「静默丢稿」只有真浏览器 + 真编辑器 + 真磁盘一起验才抓得住。
+  const SNAP_A = '回滚前的正文甲甲甲'
+  const SNAP_B = '改动后的正文乙乙乙'
+  const BODY_DIR = WORK + '/正文'
+  // 注意：不要把这个写成 page.waitFor 的表达式 —— waitFor 会把返回值当对象折算成 true，
+  // 里面再套一层 async IIFE 的话它压根不会等，条件立刻"成立"。
+  const waitDisk = async (needle, timeout = 9000) => {
+    const t0 = Date.now()
+    while (Date.now() - t0 < timeout) {
+      const hit = await page.evaluate(`
+        const files = await window.__fs.walk(${JSON.stringify(BODY_DIR)})
+        for (const f of files) if (f.endsWith('.md') && (await window.__fs.read(f)).includes(${JSON.stringify(needle)})) return f
+        return ''
+      `)
+      if (hit) return hit
+      await sleep(200)
+    }
+    return ''
+  }
+  const typeInto = async (text) => {
+    await page.evaluate("document.querySelector('.ProseMirror').focus(); return true")
+    await page.pressKey('a', { ctrl: true })
+    await page.typeText(text)
+    await sleep(300)
+  }
+
+  // 先显式落到写作视图：章节目录是 .main 的**兄弟**，看板/关系图下它照样在，
+  // 所以「目录能点」推不出「编辑器挂着」——而下面全靠编辑器。别靠上下文猜。
+  await page.pressKey('1', { ctrl: true })
+  await sleep(600)
+
+  await page.clickByText('.tree-body .ch-title', '改过名的章')
+  await sleep(900)
+  await page.waitFor("document.querySelector('.ProseMirror')", { timeout: 8000, label: '编辑器挂载（快照用例）' })
+
+  await typeInto(SNAP_A)
+  check('（前置）回滚前的正文已落盘（等自动保存真的写完）', !!(await waitDisk(SNAP_A)), `正文目录里找不到「${SNAP_A}」`)
+
+  // 建一个手动快照，里面存的就是 SNAP_A
+  await page.clickByText('.bar button', '快照')
+  await page.waitFor("document.querySelector('.dialog')", { timeout: 6000, label: '快照面板' })
+  await page.clickByText('.dialog button', '创建快照')
+  await page.waitFor("document.querySelectorAll('.dialog .item').length >= 1", { timeout: 8000, label: '快照列表出现条目' })
+  const manualSnap = await page.evaluate("return Array.from(document.querySelectorAll('.dialog .item')).filter((i) => i.innerText.includes('手动')).length")
+  check('快照：手动快照建出来了并列在面板里', manualSnap >= 1, `手动快照 ${manualSnap} 个`)
+  await page.clickByText('.dialog .head button', '×')
+  await sleep(400)
+
+  // 正文改成另一段，再回滚到刚才那份手动快照
+  await typeInto(SNAP_B)
+  check('（前置）改动后的正文已落盘', !!(await waitDisk(SNAP_B)), `正文目录里找不到「${SNAP_B}」`)
+
+  await page.clickByText('.bar button', '快照')
+  await page.waitFor("document.querySelector('.dialog')", { timeout: 6000, label: '快照面板（回滚）' })
+  // 要认准刚建的那条手动快照：自动快照也在列表里，点错了回滚到别的内容就白测了
+  const clickedRollback = await page.evaluate(`
+    const item = Array.from(document.querySelectorAll('.dialog .item')).find((i) => i.innerText.includes('手动'))
+    if (!item) return false
+    const btn = Array.from(item.querySelectorAll('button')).find((b) => b.textContent.trim() === '回滚')
+    if (!btn) return false
+    btn.scrollIntoView({ block: 'center' })
+    btn.click()
+    return true
+  `)
+  check('快照：点得到那条手动快照的「回滚」', clickedRollback)
+  await page.waitFor("document.querySelector('.dlg-foot')", { timeout: 6000, label: '回滚确认框' })
+  check(
+    '快照：回滚前走应用内确认框（不是原生 confirm）',
+    String(await page.evaluate("return (document.querySelector('.dlg-body') || {}).innerText || ''")).includes('替换')
+  )
+  await page.clickByText('.dlg-foot button', '回滚')
+  await sleep(1500)
+
+  const screenAfter = await page.evaluate("return document.querySelector('.ProseMirror').innerText")
+  check(
+    '快照回滚：编辑区真的换成了快照内容（这是当初那个 bug 的正脸）',
+    screenAfter.includes(SNAP_A) && !screenAfter.includes(SNAP_B),
+    screenAfter.replace(/\s+/g, ' ').slice(0, 120)
+  )
+  const diskAfter = await page.evaluate(`
+    const files = await window.__fs.walk(${JSON.stringify(BODY_DIR)})
+    const hits = []
+    for (const f of files) if (f.endsWith('.md') && (await window.__fs.read(f)).includes(${JSON.stringify(SNAP_A)})) hits.push(f)
+    return hits
+  `)
+  check('快照回滚：磁盘上同步成了快照内容', diskAfter.length >= 1, JSON.stringify(diskAfter))
+
+  // 真正的分水岭：回滚之后接着写。屏幕与盘不一致时，这一步就是「静默丢改动」的现场。
+  await page.evaluate("document.querySelector('.ProseMirror').focus(); return true")
+  await page.typeText('（回滚后接着写）')
+  await sleep(2400)
+  const tailDisk = await page.evaluate(`
+    const files = await window.__fs.walk(${JSON.stringify(BODY_DIR)})
+    for (const f of files) {
+      if (!f.endsWith('.md')) continue
+      const t = await window.__fs.read(f)
+      if (t.includes(${JSON.stringify(SNAP_A)}) && t.includes('回滚后接着写')) return t
+    }
+    return ''
+  `)
+  check('快照回滚：之后接着写不会把回滚覆盖回去（屏幕与盘同源）', !!tailDisk, '磁盘上没找到「快照内容 + 新输入」的组合')
+  await shot(page, '21-snapshot-rollback.png')
+
+  /* ---------- 7.11 P3-F：没有 File System Access API 的浏览器怎么活 ---------- */
+  section('7.11 降级沙盒：导入 → 写 → 导出（Firefox / Safari 走的那条路）')
+  // `?sandbox=1` 强制降级。为什么要有这个开关：这条路真正的用户是 Firefox / Safari，
+  // 而验收跑在 Chrome 上 —— 不开个口子，「没有 FSA 时长什么样」就只能靠想象。
+  await page.evaluate(`
+    localStorage.clear()
+    await new Promise((r) => { const q = indexedDB.deleteDatabase('writer-sandbox'); q.onsuccess = q.onerror = q.onblocked = () => r() })
+    return true
+  `)
+  await page.navigate(URL + '?sandbox=1', { waitMs: 1800 })
+  const sbxHome = await page.text()
+  check('降级：首页给出沙盒入口，而不是一句「请用 Edge / Chrome」', sbxHome.includes('这个浏览器不能直接读写本机文件夹') && sbxHome.includes('导入作品文件夹'), sbxHome.slice(0, 100))
+  check('降级：代价写在明面上（不是只报喜）', sbxHome.includes('这样做的代价'), sbxHome.slice(0, 120))
+  // 代价三条收在 <details> 里（不展开时 innerText 取不到），所以这里真的把它展开来看
+  await page.evaluate("const d = document.querySelector('.degrade-box details'); if (d) d.open = true; return true")
+  await sleep(150)
+  const sbxHomeOpen = await page.text()
+  check('降级：展开后能看到三条硬限制', /磁盘不是实时同步/.test(sbxHomeOpen) && /表达不了「删除」/.test(sbxHomeOpen) && /素材留在原地/.test(sbxHomeOpen), sbxHomeOpen.slice(-260))
+  check('降级：直接读写文件夹的入口收起来了（留着也点不通）', !sbxHome.includes('打开已有作品'), sbxHome.slice(0, 200))
+  await shot(page, '21-sandbox-home.png')
+
+  const chip = () => page.evaluate("return document.querySelector('.bar .tag.sbx')?.innerText.trim() || ''")
+
+  // 新建：连 FSA 都没有，自然不该弹目录选择器（真弹出来这里会一直等下去）
+  await page.clickByText('.degrade-box button', '新建作品（沙盒）')
+  await page.waitFor("document.querySelector('.create-sbx')", { label: '沙盒新建表单' })
+  await page.evaluate("const i = document.querySelector('.create-sbx input'); i.focus(); i.select(); return true")
+  await page.typeText(SBX_WORK)
+  await page.clickByText('.create-sbx button', '创建并开始写')
+  await page.waitFor("document.querySelector('.bar')", { timeout: 15000, label: '进入写作界面' })
+  check('降级：不弹目录选择器也能新建作品', true)
+  check('降级：顶栏立刻挂出沙盒标记', /沙盒 · 未导出 \d+/.test(await chip()), await chip())
+  const opfsNow = await page.evaluate("return await window.__fs.walk('')")
+  check('降级：沙盒作品一个文件都没写进真实目录', !opfsNow.some((p) => p.includes(SBX_WORK)), JSON.stringify(opfsNow.slice(0, 6)))
+
+  // 建章 + 写作 + 等自动保存：整套编辑体验不该因为降级打折扣
+  await page.evaluate("const i = document.querySelector('.blank-start .first-input'); i.focus(); return true")
+  await page.typeText(CH_TITLE)
+  await page.clickByText('.blank-start button', '新建第一章')
+  await page.waitFor("document.querySelector('.ProseMirror')", { timeout: 10000, label: '编辑器挂载' })
+  await page.evaluate("document.querySelector('.ProseMirror').focus(); return true")
+  await page.typeText(SBX_LINE)
+  await page.waitFor("document.querySelector('.save')?.textContent.includes('已保存')", { timeout: 8000, label: '自动保存' })
+  check('降级：编辑器与自动保存照常（「已保存」指的是浏览器里）', true)
+  const opfsAfterWrite = await page.evaluate("return await window.__fs.walk('')")
+  check('降级：磁盘上依旧什么都没有 —— 自动保存 ≠ 落盘', !opfsAfterWrite.some((p) => p.includes(SBX_WORK)), JSON.stringify(opfsAfterWrite.slice(0, 6)))
+  await shot(page, '22-sandbox-writing.png')
+
+  // 导出：真的把 zip 下载下来，解开看条目名
+  const sbxDir = join(FIXTURES, 'sandbox-dl')
+  await page.allowDownloads(sbxDir)
+  await page.click('.bar .tag.sbx')
+  await page.waitFor("document.querySelector('.dialog.sbx')", { label: '沙盒面板打开' })
+  const sbxPanel = await page.evaluate("return document.querySelector('.dialog.sbx')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check('降级：面板第一句就说清「只有导出才落盘」', sbxPanel.includes('只有点了下面的导出'), sbxPanel.slice(0, 90))
+  check('降级：面板列出「与磁盘不一样」的文件', /正文\/第001章/.test(sbxPanel), sbxPanel.slice(0, 200))
+  await shot(page, '23-sandbox-panel.png')
+
+  await page.clickByTextLike('.dialog.sbx button', '导出全部')
+  const sbxZip = await page.waitForDownload(sbxDir, /沙盒导出-全量.*\.zip$/)
+  const szBuf = readFileSync(sbxZip)
+  check('降级：导出包落到了磁盘', szBuf.length > 400, `${szBuf.length} 字节：${sbxZip.split(/[\\/]/).pop()}`)
+  check('降级：导出的是合法 zip', szBuf[0] === 0x50 && szBuf[1] === 0x4b)
+  const hasS = (s) => szBuf.includes(Buffer.from(s, 'utf8'))
+  check('降级：zip 里的条目名就是作品内的相对路径', hasS('正文/第001章 启程.md'), '')
+  check('降级：zip 里带了「解开之后怎么用」的说明与清单', hasS('沙盒导出说明.md') && hasS('沙盒导出信息.json'))
+  check('降级：导出后顶栏变成「已同步」', (await chip()).includes('已同步'), await chip())
+  await page.click('.dialog.sbx .head .btn-icon')
+  await sleep(300)
+  check('降级：沙盒面板能关掉', !(await page.evaluate("return !!document.querySelector('.dialog.sbx')")))
+
+  // 刷新：内存镜像存了 IndexedDB，所以「浏览器里那份」要自己回来（不靠任何授权）
+  const idbMirror = await page.evaluate(`
+    return await new Promise((res) => {
+      const q = indexedDB.open('writer-sandbox', 1)
+      q.onerror = () => res('open-error')
+      q.onsuccess = () => {
+        const db = q.result
+        if (!db.objectStoreNames.contains('state')) return res('no-store')
+        const r = db.transaction('state', 'readonly').objectStore('state').get('current')
+        r.onsuccess = () => res(r.result ? 'saved:' + r.result.roots[0].files.length + ':' + r.result.meta.name : 'empty')
+        r.onerror = () => res('get-error')
+      }
+    })
+  `)
+  check('降级：内存镜像已经落进 IndexedDB（刷新后才拿得回来）', /^saved:/.test(idbMirror), idbMirror)
+  const recentTop = await page.evaluate("return JSON.parse(localStorage.getItem('writer.settings.v1') || '{}')?.recent?.[0]?.refId || ''")
+  check('降级：最近作品记的是沙盒 id（下次打开才知道该恢复它）', recentTop.startsWith('mem:'), recentTop)
+
+  await page.reload(2600)
+  const sbxReload = await page.text()
+  const backInSbx = await page.evaluate("return !!document.querySelector('.bar')")
+  check('降级：刷新后自动回到沙盒作品（不用重新导入）', backInSbx && !sbxReload.includes('导入作品文件夹'), sbxReload.slice(0, 120))
+  const pmSbx = await page.evaluate("return document.querySelector('.ProseMirror')?.innerText || ''")
+  check('降级：刷新后正文没丢（内存镜像落过 IndexedDB）', pmSbx.includes(SBX_LINE), JSON.stringify(pmSbx.slice(0, 60)))
+  check('降级：回来时标记仍是「已同步」', (await chip()).includes('已同步'), await chip())
+  await shot(page, '24-sandbox-after-reload.png')
+
+  // 关闭作品：沙盒要一起退出（宿主装回去），并留在浏览器里等下次继续
+  await page.clickByText('.right button', '关闭作品')
+  await page.waitFor("document.querySelector('.home')", { timeout: 8000, label: '回到首页' })
+  const homeAfterClose = await page.text()
+  check('降级：关闭作品后回到首页', homeAfterClose.includes('离线写作工作台'))
+  check('降级：首页给出「继续写」入口（浏览器里那份还在）', homeAfterClose.includes('浏览器里还存着上次的沙盒作品') && homeAfterClose.includes('继续写'), homeAfterClose.slice(0, 160))
+  check('降级：入口上标明已同步（不会让人以为还有东西没导出）', /已同步/.test(homeAfterClose), homeAfterClose.slice(0, 200))
+  await shot(page, '25-sandbox-closed.png')
+
+  /* ---------- 7.12 手机适配（?mobile=1） ---------- */
+  section('7.12 手机适配：安全区 · 底部工具条 · 抽屉 · 返回键 · 标点条')
+  // `?mobile=1` 把界面切到手机版（跟 `?sandbox=1` 一个路子）。手机上长什么样、手势接没接上，
+  // 桌面 Chrome 里都能照着验 —— 走的是同一套 Vue 分支、同一份 CSS、同一份手势代码。
+  // 尺寸也真的改成手机尺寸：安全区/触摸目标这些只有真尺寸下才有意义。
+  await page.setViewport(390, 844)
+
+  // (a) 手机版首页
+  await page.evaluate('localStorage.clear(); return true')
+  await page.navigate(URL + '?mobile=1', { waitMs: 1600 })
+  check(
+    '手机：<html> 挂上 ua-mobile（样式与脚本共用这一个标记）',
+    await page.evaluate("return document.documentElement.classList.contains('ua-mobile')")
+  )
+  const sab = await page.evaluate("return getComputedStyle(document.documentElement).getPropertyValue('--sab').trim()")
+  check('手机：安全区变量已接线（env(safe-area-inset-*) 取得到值）', /^-?\d+(\.\d+)?px$/.test(sab), `--sab = ${sab || '（取不到）'}`)
+  const mHome = await page.text()
+  check('手机：首页换成作品库形态（桌面那套入口收起来）', mHome.includes('作品库') && !mHome.includes('打开已有作品'), mHome.slice(0, 160))
+  await shot(page, '26-mobile-home.png')
+
+  // (b) 手机版写作界面：底部工具条 + 两个抽屉
+  await page.navigate(URL + '?mobile=1&sandbox=1', { waitMs: 1600 })
+  await page.clickByText('.degrade-box button', '新建作品（沙盒）')
+  await page.waitFor("document.querySelector('.create-sbx')", { label: '沙盒新建表单' })
+  await page.evaluate("const i = document.querySelector('.create-sbx input'); i.focus(); i.select(); return true")
+  await page.typeText(SBX_WORK)
+  await page.clickByText('.create-sbx button', '创建并开始写')
+  await page.waitFor("document.querySelector('.mobile-bar')", { timeout: 15000, label: '手机底部工具条' })
+  const barLabels = await page.evaluate(
+    "return Array.from(document.querySelectorAll('.mobile-bar button')).map((b) => b.textContent.trim()).join('/')"
+  )
+  check('手机：底部工具条给出五个拇指区动作', barLabels === '目录/大纲/撤销/保存/资料', barLabels)
+  const barH = await page.evaluate("return Math.round(document.querySelector('.mobile-bar button').getBoundingClientRect().height)")
+  check('手机：工具条按钮触摸目标 ≥ 44px', barH >= 44, `${barH}px`)
+  check(
+    '手机：两个侧栏默认收起（一进来就能写字，不被抽屉盖住）',
+    await page.evaluate("return !document.querySelector('.tree') && !document.querySelector('.dock:not(.ref)')")
+  )
+  // 顶栏溢出这个坑不写断言就永远发现不了：按钮在屏幕外，看着像「没做适配」
+  const barFit = await page.evaluate(`
+    const bar = document.querySelector('.bar')
+    const btns = Array.from(bar.querySelectorAll('button')).filter((b) => b.offsetParent !== null)
+    const right = btns.length ? Math.max(...btns.map((b) => b.getBoundingClientRect().right)) : 0
+    return { vw: innerWidth, right: Math.round(right), shown: btns.length }
+  `)
+  check('手机：顶栏不溢出（最右的按钮完整落在屏幕内）', barFit.right <= barFit.vw, JSON.stringify(barFit))
+  await shot(page, '27-mobile-write.png')
+
+  // 先建第一章：后面要测章节行的触摸目标，切回写作视图也要它才有编辑器
+  await page.evaluate("const i = document.querySelector('.blank-start .first-input'); i.focus(); return true")
+  await page.typeText(CH_TITLE)
+  await page.clickByText('.blank-start button', '新建第一章')
+  await page.waitFor("document.querySelector('.ProseMirror')", { timeout: 10000, label: '编辑器挂载' })
+
+  // 「更多」菜单：顶栏让位的那些动作得真的能点到
+  await page.clickByText('.bar button', '⋯')
+  await page.waitFor("document.querySelector('.more-menu')", { label: '更多菜单打开' })
+  const mmText = await page.evaluate("return document.querySelector('.more-menu')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check(
+    '手机：更多菜单收着被顶栏让位的动作（视图 / 导出 / 快照 / 导入 / 设置）',
+    ['写作', '看板', '关系图', '导出', '快照', '导入稿件', '设置'].every((t) => mmText.includes(t)),
+    mmText.slice(0, 140)
+  )
+  await page.clickByText('.more-menu button', '看板')
+  await page.waitFor("document.querySelector('.board')", { timeout: 5000, label: '切到看板视图' })
+  check('手机：从更多菜单切视图真的生效，菜单自己收起', !(await page.evaluate("return !!document.querySelector('.more-menu')")))
+  await page.clickByText('.bar button', '⋯')
+  await page.waitFor("document.querySelector('.more-menu')", { label: '再次打开更多菜单' })
+  await page.clickByText('.more-menu button', '写作')
+  await page.waitFor("document.querySelector('.ProseMirror')", { timeout: 5000, label: '切回写作视图' })
+
+  // 抽屉 + 触摸目标
+  await page.clickByText('.mobile-bar button', '目录')
+  await page.waitFor("document.querySelector('.tree')", { label: '目录抽屉打开' })
+  check('手机：目录是盖在稿纸上的抽屉，并挂出遮罩（点别处可收起）', await page.evaluate("return !!document.querySelector('.drawer-scrim')"))
+  const chH = await page.evaluate("const el = document.querySelector('.tree .ch'); return el ? Math.round(el.getBoundingClientRect().height) : 0")
+  check('手机：章节行的触摸目标 ≥ 44px', chH >= 44, `${chH}px`)
+  await shot(page, '28-mobile-drawer.png')
+
+  // 安卓返回键（WebView 里就是 history back）：应当先关抽屉，而不是退出写作
+  await page.evaluate('history.back(); return true')
+  await page.waitFor("!document.querySelector('.tree')", { timeout: 5000, label: '返回键收起抽屉' })
+  check('手机：系统返回键先关抽屉（不退应用）', true)
+  check('手机：抽屉收掉后遮罩也跟着没', await page.evaluate("return !document.querySelector('.drawer-scrim')"))
+
+  // 边缘滑动：真的走一遍触摸输入管线（Input.dispatchTouchEvent），不是自己派发假事件
+  const touch = async (x1, y1, x2, y2) => {
+    await page.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: x1, y: y1 }] })
+    await page.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x2, y: y2 }] })
+    await page.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    await sleep(250)
+  }
+  await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 })
+  await touch(8, 420, 150, 424)
+  await page.waitFor("document.querySelector('.tree')", { timeout: 4000, label: '左边缘右滑拉开目录' })
+  check('手机：左边缘右滑拉开目录（手势真的接上了）', true)
+  // 收抽屉走遮罩：这里不该再动 history（返回键那条另有断言，掺在一起会互相干扰）
+  await page.click('.drawer-scrim')
+  await page.waitFor("!document.querySelector('.tree')", { timeout: 4000, label: '点遮罩收起目录' })
+  check('手机：点抽屉外的遮罩能收起抽屉', true)
+
+  // TEMP-DIAG4：在 document 捕获段再挂一层监听，区分「事件没进页面」和「手势没收到」
+  await page.evaluate(
+    "window.__touchLog = []; document.addEventListener('touchstart', (e) => { const t = e.touches[0]; window.__touchLog.push('ts@' + Math.round(t.clientX) + ',' + Math.round(t.clientY)) }, { capture: true, passive: true }); return true"
+  )
+  // 起点 x=370：仍在 28px 手势区里（390-28=362），但避开了 Chrome 触摸投递的
+  // 右缘死区 —— 实测 x=382 的 touchStart 根本不会被送进页面（疑似模拟视口下
+  // 右缘 ~8px 被滚动条/边缘区命中吃掉），而真机上系统返回手势也恰好把最外侧
+  // 几像素让给了系统，用户实际就是从这条带起手的。
+  await touch(370, 420, 240, 424)
+  await page.waitFor("document.querySelector('.dock:not(.ref)')", { timeout: 4000, label: '右边缘左滑拉开资料面板' })
+  check('手机：右边缘左滑拉开资料面板', true)
+  await page.click('.drawer-scrim')
+  await page.waitFor("!document.querySelector('.dock:not(.ref)')", { timeout: 4000, label: '点遮罩收起资料面板' })
+
+  // 竖滑不参与：上下滚稿纸不该把抽屉拽出来
+  await touch(20, 200, 26, 520)
+  await sleep(250)
+  check(
+    '手机：竖滑不触发抽屉（上下滚稿纸不会误开）',
+    await page.evaluate("return !document.querySelector('.tree') && !document.querySelector('.dock:not(.ref)')")
+  )
+
+  // 软键盘：把窗口高度缩掉一大截，键盘探测应当认出「键盘弹起来了」
+  await page.setViewport(390, 380)
+  await page.waitFor("document.querySelector('.mobile-bar.keys')", { timeout: 5000, label: '键盘上方的标点条' })
+  const punct = await page.evaluate(
+    "return Array.from(document.querySelectorAll('.mobile-bar.keys button')).map((b) => b.textContent.trim()).join(' ')"
+  )
+  check('手机：键盘弹起时工具条变成标点条（「」——……）', punct.includes('「」') && punct.includes('——') && punct.includes('……'), punct)
+  const barBottom = await page.evaluate("return parseFloat(getComputedStyle(document.querySelector('.mobile-bar')).bottom) || 0")
+  check('手机：标点条贴在键盘上沿（bottom = 量出来的键盘高度）', barBottom > 80, `bottom = ${barBottom}px`)
+  await shot(page, '29-mobile-keyboard.png')
+  await page.setViewport(390, 844)
+  await page.waitFor("!document.querySelector('.mobile-bar.keys')", { timeout: 5000, label: '键盘收起后回到导航条' })
+  check('手机：键盘收起后工具条回到导航形态', true)
+
+  /* ---------- 7.13 切换动效 + 全局视图在手机上的重排 ---------- */
+  section('7.13 切换动效（推入 / 抽屉 / 页签）与全局视图的手机重排')
+  /* 过渡类只在两三百毫秒内存在，靠 evaluate 抢时机不可靠 ——
+     在页面里挂一个 MutationObserver 守着，切完再回来取记录。
+     顺带记下「同一时刻 .main 下有几个直接子元素」：左右推入要求新旧两份**同时在场上**，
+     否则动画会退化成「先空一下再出现」，而这在肉眼上跟没做动画几乎分不出来。 */
+  const armFx = () =>
+    page.evaluate(`
+      window.__fx = []
+      window.__fxMax = 0
+      if (window.__fxMo) window.__fxMo.disconnect()
+      const push = (el) => {
+        if (!el || el.nodeType !== 1 || !el.classList) return
+        for (const c of el.classList) if (/^(vp|drawer|dock|scrim)-/.test(c)) window.__fx.push(c)
+      }
+      const mo = new MutationObserver((muts) => {
+        for (const m of muts) {
+          push(m.target)
+          for (const n of m.addedNodes || []) push(n)
+        }
+        const main = document.querySelector('.main')
+        if (main) window.__fxMax = Math.max(window.__fxMax, main.children.length)
+      })
+      mo.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] })
+      window.__fxMo = mo
+      return true
+    `)
+  const readFx = () => page.evaluate('return { fx: window.__fx, max: window.__fxMax }')
+  // 手机上切视图只能走顶栏的「⋯」菜单（视图按钮被顶栏让位收进去了）
+  const switchView = async (label, sel) => {
+    await page.clickByText('.bar button', '⋯')
+    await page.waitFor("document.querySelector('.more-menu')", { timeout: 5000, label: `更多菜单 → ${label}` })
+    await page.clickByText('.more-menu button', label)
+    await page.waitFor(`document.querySelector(${JSON.stringify(sel)})`, { timeout: 8000, label: `切到${label}` })
+    await sleep(460)
+  }
+
+  // (a) 往后翻：写作 → 看板，新页应当从右边推进来
+  await armFx()
+  await switchView('看板', '.board')
+  const fxFwd = await readFx()
+  check(
+    '动效：往后翻（写作→看板）走「从右推入」这一组（vp-left）',
+    fxFwd.fx.includes('vp-left-enter-active') && fxFwd.fx.includes('vp-left-leave-active'),
+    fxFwd.fx.join(',') || '（一个过渡类都没挂上 = 硬切）'
+  )
+  check('动效：推入时新旧两份同时在场上，不是先空一下再出现', fxFwd.max >= 2, `同时在场 ${fxFwd.max} 个`)
+  await shot(page, '30-mobile-board.png')
+
+  // (b) 看板：桌面是五列横排，390px 上会挤成一条缝 —— 手机上要改成单列纵向
+  const bd = await page.evaluate(`return (() => {
+    const cols = document.querySelector('.board .cols')
+    const col = document.querySelector('.board .col')
+    if (!cols || !col) return null
+    return {
+      dir: getComputedStyle(cols).flexDirection,
+      colsW: Math.round(cols.getBoundingClientRect().width),
+      colW: Math.round(col.getBoundingClientRect().width),
+      moveBtns: document.querySelectorAll('.board .move-btn').length
+    }
+  })()`)
+  check('手机：看板五列横排改成单列纵向（滚动方向只留上下）', !!bd && bd.dir === 'column', `flex-direction: ${bd && bd.dir}`)
+  check('手机：看板每列撑满屏宽，不再被挤成一条缝', !!bd && bd.colW >= bd.colsW - 24, bd ? `${bd.colW} / ${bd.colsW}` : '没有列')
+  check('手机：卡片给出「移到…」入口（触摸屏没有 HTML5 拖放，桌面那套拖拽根本不触发）', !!bd && bd.moveBtns >= 1, `move-btn × ${bd && bd.moveBtns}`)
+
+  // (c) 「移到…」真的改得动状态 —— 触摸设备上这是**唯一**的改法
+  const stCur = await page.evaluate(`return (() => {
+    const c = document.querySelector('.board .card')
+    const h = c && c.closest('.col') && c.closest('.col').querySelector('.col-head b')
+    return h ? h.textContent.trim() : ''
+  })()`)
+  const stNext = stCur === '已定稿' ? '待写' : '已定稿'
+  await page.click('.board .move-btn')
+  await page.waitFor("document.querySelector('.board .moves')", { timeout: 4000, label: '「移到…」展开' })
+  check(
+    '手机：「移到…」展开成一排够高的状态按钮',
+    await page.evaluate(`return (() => {
+      const b = document.querySelector('.board .moves button')
+      return !!b && b.getBoundingClientRect().height >= 44 && document.querySelectorAll('.board .moves button').length >= 4
+    })()`)
+  )
+  await page.clickByText('.board .moves button', stNext)
+  await sleep(500)
+  const stNow = await page.evaluate(`return (() => {
+    const c = document.querySelector('.board .card')
+    const h = c && c.closest('.col') && c.closest('.col').querySelector('.col-head b')
+    return h ? h.textContent.trim() : ''
+  })()`)
+  const stNotice = await page.evaluate("return (document.querySelector('.board .head .ok') || {}).textContent || ''")
+  check('手机：点「移到…」真的改了章节状态（触摸设备上唯一的改法）', stNow === stNext && stCur !== stNext, `${stCur} → ${stNow}（期望 ${stNext}）`)
+  check('手机：改完给了一句回执，不和桌面那条路径两样', stNotice.includes(stNext), stNotice || '（没有回执）')
+
+  // (d) 往前翻：方向必须反过来
+  await armFx()
+  await switchView('写作', '.ProseMirror')
+  const fxBack = await readFx()
+  check(
+    '动效：往前翻（看板→写作）方向反过来（vp-right）',
+    fxBack.fx.includes('vp-right-enter-active') && !fxBack.fx.includes('vp-left-enter-active'),
+    fxBack.fx.join(',') || '（没挂过渡类）'
+  )
+
+  // (e) 左抽屉 + 遮罩
+  await armFx()
+  await page.clickByText('.mobile-bar button', '目录')
+  await page.waitFor("document.querySelector('.tree')", { label: '目录抽屉' })
+  await sleep(420)
+  const fxDrawer = await readFx()
+  check(
+    '动效：目录从左边滑出来（drawer-l），遮罩同时淡入（scrim）',
+    fxDrawer.fx.includes('drawer-l-enter-active') && fxDrawer.fx.includes('scrim-enter-active'),
+    fxDrawer.fx.join(',') || '（没挂过渡类）'
+  )
+  await page.click('.drawer-scrim')
+  await page.waitFor("!document.querySelector('.tree')", { timeout: 4000, label: '收起目录' })
+  await sleep(420)
+  const fxDrawerOut = await readFx()
+  check(
+    '动效：收起时也是滑出去（不是直接消失）',
+    fxDrawerOut.fx.includes('drawer-l-leave-active'),
+    fxDrawerOut.fx.join(',') || '（没挂离场过渡）'
+  )
+
+  // (f) 右侧页签
+  await page.clickByText('.mobile-bar button', '资料')
+  await page.waitFor("document.querySelector('.dock .tabs')", { label: '资料面板' })
+  const dockTabs = await page.evaluate("return Array.from(document.querySelectorAll('.dock .tabs button')).map((b) => b.textContent.trim())")
+  const tabH = await page.evaluate("return Math.round(document.querySelector('.dock .tabs button').getBoundingClientRect().height)")
+  check('手机：资料面板的页签点得到（≥2 个）且触摸目标 ≥ 36px', dockTabs.length >= 2 && tabH >= 36, `${dockTabs.length} 个 / ${tabH}px`)
+  await armFx()
+  await page.clickByText('.dock .tabs button', dockTabs[1])
+  await sleep(420)
+  const fxDock = await readFx()
+  check('动效：切右侧页签走淡入横移（dock-*），不是硬切', fxDock.fx.some((c) => c.startsWith('dock-')), fxDock.fx.join(',') || '（没挂过渡类）')
+
+  // (g) 其余三个全局视图的重排。
+  //     这一节只验**布局**：降级沙盒的作品存在 IndexedDB 里（`writer-sandbox`），
+  //     不经过 OPFS，所以没法像 5.1 那样绕过界面往「设定/」里塞条目 —— 沙盒的关系图
+  //     是没有节点的。`.stage` / `.side` 都是无条件渲染的，布局照样量得到。
+  //     （节点拖动本身在 5.1 用真鼠标验过了，那条路径和手机上走的是同一套 Pointer Events；
+  //       手机专属的那条 `touch-action: none` 是纯 CSS 声明，交给 selfcheck 的源码闸门。）
+  await switchView('关系图', '.graph')
+  const gp = await page.evaluate(`return (() => {
+    const side = document.querySelector('.graph .side')
+    const stage = document.querySelector('.graph .stage')
+    const root = document.querySelector('.graph')
+    if (!side || !stage || !root) return null
+    return {
+      sideW: Math.round(side.getBoundingClientRect().width),
+      bodyW: Math.round(root.getBoundingClientRect().width),
+      stageH: Math.round(stage.getBoundingClientRect().height)
+    }
+  })()`)
+  check('手机：关系图详情栏撑满整行（不再是贴底那条 210px 窄栏）', !!gp && gp.sideW >= gp.bodyW - 24, gp ? `${gp.sideW} / ${gp.bodyW}` : '没有详情栏')
+  check('手机：画布留出足够高度（不会被详情栏挤成一条）', !!gp && gp.stageH >= 200, gp ? `${gp.stageH}px` : '没有画布')
+  // 桌面版那句「拖动圆点可摆位置」在手机上是**用不了的说明**（触摸没有 hover/鼠标拖），
+  // 这类「文案还停在电脑上」的痕迹正是这一节要抓的东西之一
+  check('手机：关系图的说明改成手指的说法（「按住圆点拖动」）', (await page.text()).includes('按住圆点拖动可摆位置'))
+  await shot(page, '31-mobile-graph.png')
+
+  await switchView('时间线', '.tl')
+  const tlDir = await page.evaluate("return getComputedStyle(document.querySelector('.tl .body')).flexDirection")
+  const tlSideW = await page.evaluate(`return (() => {
+    const s = document.querySelector('.tl .side'), b = document.querySelector('.tl')
+    return s && b ? Math.round(s.getBoundingClientRect().width) + '/' + Math.round(b.getBoundingClientRect().width) : ''
+  })()`)
+  check('手机：时间线右侧矛盾栏挪到底下（改成上下两段）', tlDir === 'column', `flex-direction: ${tlDir}`)
+  check('手机：矛盾栏撑满整行，不再把事件流挤成一条缝', (() => {
+    const [w, b] = String(tlSideW).split('/').map(Number)
+    return w > 0 && b > 0 && w >= b - 24
+  })(), tlSideW)
+
+  await switchView('统计', '.stats')
+  const st2 = await page.evaluate(`return (() => {
+    const two = document.querySelector('.stats .two')
+    return {
+      cols: getComputedStyle(two).gridTemplateColumns,
+      w: Math.round(document.querySelector('.stats .scroll').getBoundingClientRect().width)
+    }
+  })()`)
+  check('手机：统计的固定两列改成单列（390px 上每列只有 ~180px，数字会换行）', st2.cols.split(' ').filter(Boolean).length === 1, `${st2.cols}（滚动区宽 ${st2.w}）`)
+  await shot(page, '32-mobile-stats.png')
+
+  // 第 8 节要回到写作视图，别把这一段的状态带过去
+  await switchView('写作', '.ProseMirror')
+
+  await page.send('Emulation.setTouchEmulationEnabled', { enabled: false, maxTouchPoints: 1 })
+  await page.setViewport(1440, 900)
+
+  /* ---------- 8. 报错汇总 ---------- */
+  section('8. 控制台与网络')
+  const realErrors = page.consoleErrors.filter((e) => !/favicon/i.test(e))
+  const realPageErrors = page.pageErrors.filter((e) => !/favicon/i.test(e))
+  check('无未捕获的页面异常', realPageErrors.length === 0, realPageErrors.join(' ⏐ '))
+  check('无控制台 error', realErrors.length === 0, realErrors.slice(0, 3).join(' ⏐ '))
+  check('无失败的资源请求', page.failedRequests.length === 0, page.failedRequests.slice(0, 3).join(' ⏐ '))
+  if (page.consoleWarns.length) {
+    warnings.push(...page.consoleWarns)
+    note('    控制台 warning（' + page.consoleWarns.length + ' 条，非阻断）：' + page.consoleWarns.slice(0, 4).join(' ⏐ '))
+  }
+  if (page.consoleErrors.length !== realErrors.length) note('    （已忽略 favicon 类资源告警）')
+
+  await shot(page, '09-final.png')
+} catch (e) {
+  failures.push('脚本中断：' + (e?.message || e))
+  console.error('\n脚本中断：', e)
+  try {
+    if (page) await shot(page, '99-crash.png')
+  } catch {}
+} finally {
+  await browser.close()
+}
+
+/* ------------------------------------------------------------------ 汇总 */
+console.log('\n' + '='.repeat(60))
+if (failures.length === 0) {
+  console.log(`真实浏览器验收：${pass} 项全部通过 ✅`)
+} else {
+  console.log(`真实浏览器验收：通过 ${pass} 项，失败 ${failures.length} 项 ❌`)
+  for (const f of failures) console.log('  ✗ ' + f)
+}
+if (warnings.length) console.log(`（另有 ${warnings.length} 条控制台 warning，不阻断）`)
+console.log(`截图目录：${SHOTS}`)
+console.log(`报告：${join(SHOTS, 'report.txt')}`)
+writeFileSync(
+  join(SHOTS, 'report.txt'),
+  [
+    `时间：${new Date().toISOString()}`,
+    `地址：${URL}`,
+    `结果：通过 ${pass} 项，失败 ${failures.length} 项`,
+    failures.length ? '\n失败项：\n' + failures.map((f) => '  - ' + f).join('\n') : '',
+    warnings.length ? '\n控制台 warning：\n' + warnings.map((w) => '  - ' + w).join('\n') : '',
+    '\n流程记录：\n' + log.join('\n')
+  ].join('\n')
+)
+process.exit(failures.length === 0 ? 0 : 1)

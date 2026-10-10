@@ -1,0 +1,88 @@
+[package]
+name = "offline-novel-writer"
+# 版本号的唯一来源。tauri.conf.json 里刻意不写 version，打包时从这里取，
+# 避免"改了 Cargo.toml 忘了改 json"这类事故。
+version = "0.1.0"
+description = "离线优先的本地写作工作台"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+[lib]
+# Tauri v2 的官方结构：真正的入口在 lib 里，main.rs 只负责调用。
+# 好处是同一个入口能被桌面端和集成测试共用（cargo test 也是走这里）。
+name = "writer_lib"
+# 这里刻意**只留 rlib**，不是照抄官方模板的 ["staticlib", "cdylib", "rlib"]。
+#
+# 原因：`cdylib` 在 Windows 的 GNU 工具链下会失败 ——
+#   ld.exe: error: export ordinal too large: 94368
+# 因为 cdylib 默认把所有符号都放进导出表，而导出序号只有 16 位。
+# 官方模板留着 cdylib 是为了移动端（Android/iOS 要动态库），
+# 本项目是桌面应用，用不到。
+#
+# 将来真要出 Android 版，再把 "cdylib" 加回来，并且改用 MSVC 工具链构建。
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+# 和下面 [dependencies] 里那条是**同一件事，但必须各写一遍**：
+# Cargo 的 resolver v2（edition 2021 默认）**不把 build-dependencies 与普通依赖的 feature 合并**，
+# 于是 indexmap 1.9.3 在这棵图里有**两个各自独立的实例**：
+#   · 一个经由 tauri-build → schemars（构建依赖那一侧）——就是报错的那个；
+#   · 一个经由我们自己的普通依赖。
+# 只在 [dependencies] 写，另一个实例照样拿不到 std，E0107 照旧。
+# `cargo tree -e features -i indexmap@1.9.3` 会打印出这两块，能直接看出来。
+indexmap = { version = "1", features = ["std"] }
+
+[dependencies]
+# tauri 相关依赖做成可选 + 归到默认 feature `desktop` 下，
+# 于是 `cargo test --no-default-features` 可以只编译 path / error / fsops 这三个纯逻辑模块。
+#
+# 为什么值得这么绕：只要链接了 tauri（实际是 tao），二进制就会导入 comctl32 v6 独有的
+# SetWindowSubclass / TaskDialogIndirect，而**测试目标拿不到应用清单**，
+# Windows 于是回落到 comctl32 v5 → 测试进程一启动就 0xC0000139。
+# 把纯逻辑摘出来用 feature 关掉 GUI，测试就能在任何机器上跑，也快得多。
+tauri = { version = "2.12.1", features = [], optional = true }
+tauri-plugin-dialog = { version = "2.8.1", optional = true }
+# AI 网络桥（桌面端唯一的出网点，见 commands/ai.rs 的模块注释）。
+# TLS 选 native-tls：Windows 上落到系统自带的 schannel，纯 FFI、零 C 编译 ——
+# 这台机器用 GNU 工具链（没有 MSVC），rustls 的 aws-lc-rs 需要 CMake/NASM，绕不起。
+#
+# 但它们单独归到 `net` feature 下，**不进 desktop**，原因是安卓：
+# native-tls 在 Android 上没有 schannel 可落，会去编 OpenSSL，而交叉编译 OpenSSL
+# 需要 perl + 一套 NDK sysroot，代价远大于收益。更隐蔽的是 —— Cargo 的 feature 统一
+# 会把 `reqwest/native-tls` 也算到 **tauri 自己依赖的那份 reqwest** 头上，
+# 于是就算 AI 模块不参与编译，openssl-sys 照样出现在依赖图里，构建必挂。
+#
+# 移动端因此不走 Rust 出网：`src/platform/aiBridge.ts` 在移动端用 WebView 的 fetch。
+# 代价是受 CORS 约束（服务商允许跨域就能用），好处是 APK 里不再拖一个 OpenSSL。
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "stream", "json"], optional = true }
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# indexmap 1.x 的 build.rs 在「没人显式要 std」时会用 autocfg 去**探测**目标有没有 std sysroot，
+# 探不到就把 `IndexMap<K, V, S>` 的默认类型参数去掉（见 indexmap-1.9.3/src/map.rs 里
+# `#[cfg(not(has_std))]` 那一对结构体定义），于是 schemars 0.8 里写的 `IndexMap<K, V>`
+# 直接 E0107「struct takes 3 generic arguments but 2 generic arguments were supplied」——
+# 报错停在 schemars 上，看着像它自己的锅。本机确实探不到，证据在构建脚本的 stderr 里：
+#   target/<profile>/build/indexmap-<hash>/stderr → `warning: autocfg could not probe for \`std\``
+# 显式索要 std 会让 build.rs 走 `Some(_) => autocfg::emit("has_std")` 那条分支，不再探测。
+# 这不是硬塞 feature：Windows 和 Android 本来就都有 std，只是探测没探出来。
+# ⚠️ 这条必须和 [build-dependencies] 里那条**成对存在**，原因写在那边。
+indexmap = { version = "1", features = ["std"] }
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tauri", "dep:tauri-plugin-dialog"]
+# 桌面端才有的出网能力。`tauri build --features net` 会带上它。
+net = ["dep:reqwest", "dep:futures-util"]
+
+# 发布构建参数取自 Tauri 官方模板：体积优先，编译慢一点无所谓。
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+incremental = false
+strip = true

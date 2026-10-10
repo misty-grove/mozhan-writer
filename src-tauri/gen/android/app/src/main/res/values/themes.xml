@@ -1,0 +1,16 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.offline_novel_writer" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Customize your theme here. -->
+        <!-- MainActivity 开了 enableEdgeToEdge：内容会画到状态栏与手势条底下。
+             系统栏必须透明，否则那里会是一条跟应用配色毫无关系的色块；
+             网页那头靠 env(safe-area-inset-*) 把顶栏/底栏撑开避开它们。 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- 不关掉的话系统会给透明导航栏强制加一层灰衬底，手势条那块发灰 -->
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+        <!-- 浅色系统栏配深色图标。真正的取值由网页按应用主题调 WriterBar.setDarkIcons，
+             这里只给「系统浅色模式下的默认值」。 -->
+        <item name="android:windowLightStatusBar" tools:targetApi="23">true</item>
+    </style>
+</resources>

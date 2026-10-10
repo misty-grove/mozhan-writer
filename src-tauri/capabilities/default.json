@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口的权限集合。桌面端只通过自定义命令读写文件，核心权限按最小面给。window 只开两条，都是关窗流程要用的：allow-close 让前端能发起一次「可被守卫拦截的关闭」（core:window:default 里只有只读权限，不含 close 也不含 destroy）；allow-destroy 是守卫落盘完成后真正销毁窗口的那一步。其余一条都不多给 —— 尤其 fs 与 dialog，文件操作全部走我们自己的 fs_* 命令。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-destroy"
+  ]
+}

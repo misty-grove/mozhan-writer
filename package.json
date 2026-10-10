@@ -1,0 +1,52 @@
+{
+  "name": "offline-novel-writer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "离线优先的本地写作工作台",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview",
+    "selfcheck": "vite build --config test.vite.config.ts && node test-dist/selfcheck.js",
+    "smoke": "vite build --config test.panels.vite.config.ts && node scripts/smoke-panels.mjs",
+    "scale": "vite build --config test.scale.vite.config.ts && node test-scale/scalecheck.js",
+    "verify": "npm run typecheck && npm run selfcheck && npm run smoke",
+    "e2e": "node scripts/e2e/run.mjs",
+    "e2e:desktop": "node scripts/e2e/desktop.mjs",
+    "verify:all": "npm run verify && npm run e2e",
+    "icon": "python scripts/desktop/make-app-icon.py src-tauri/icons/app-icon.png && tauri icon src-tauri/icons/app-icon.png",
+    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml --features net",
+    "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
+    "rust:verify": "npm run rust:check && npm run rust:test",
+    "desktop:dev": "tauri dev --features net",
+    "desktop:build": "tauri build --features net",
+    "desktop:verify": "npm run desktop:build && npm run e2e:desktop",
+    "tauri": "tauri",
+    "android:init": "python scripts/android/build.py --init-only",
+    "android:build": "python scripts/android/build.py",
+    "android:build:all": "python scripts/android/build.py --abi all"
+  },
+  "dependencies": {
+    "@esbuild/win32-x64": "^0.28.2",
+    "@rollup/rollup-win32-x64-msvc": "^4.64.1",
+    "@tauri-apps/api": "^2.12.1",
+    "@tiptap/pm": "^2.11.5",
+    "@tiptap/starter-kit": "^2.11.5",
+    "@tiptap/vue-3": "^2.11.5",
+    "docx": "^9.1.1",
+    "fflate": "^0.8.2",
+    "pinia": "^2.3.1",
+    "tiptap-markdown": "^0.8.10",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "jsdom": "^30.1.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.11",
+    "vue-tsc": "^2.2.0"
+  }
+}

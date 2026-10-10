@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover：内容延伸到状态栏 / 手势条底下（安卓开了 edge-to-edge），
+      安全距离由 CSS 的 env(safe-area-inset-*) 自己让出来 —— 见 global.css 顶部。
+      interactive-widget=resizes-content：软键盘弹起时收缩布局视口，
+      贴在键盘上的工具条才不会跟着飘（配合 manifest 的 adjustResize）。
+      maximum-scale 不锁：作者想放大看字时要能放大。
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <!-- 内联图标：省一次网络请求，也避免无头/离线环境刷出 favicon 404 -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23a8452f'/%3E%3Cpath d='M9 8h14v3H9zm0 6h14v3H9zm0 6h9v3H9z' fill='%23fff'/%3E%3C/svg%3E"
+    />
+    <title>离线写作工作台</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

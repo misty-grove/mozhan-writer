@@ -1,0 +1,13 @@
+# 用 GNU 工具链（x86_64-pc-windows-gnu）构建时，告诉 cargo 去哪儿找链接器。
+#
+# 为什么仓库里要放这个文件：
+# Windows 上 Rust 默认走 MSVC（需要装 Visual Studio 的 C++ 生成工具，约 2 GB）。
+# 这份配置让装了 MinGW-w64 的机器直接能用 GNU 工具链构建，不必为此再装一套 VS。
+# 对 MSVC 构建**没有任何影响** —— 下面只针对 gnu 目标生效。
+#
+# 前提：`gcc` / `ar` 在 PATH 上（MinGW-w64，或 MSYS2 的 mingw-w64-x86_64-toolchain）。
+# 只想用 MSVC 的话，忽略本文件即可。
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
