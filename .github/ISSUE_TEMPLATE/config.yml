@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用问题 / 怎么用
+    url: https://github.com/misty-grove/mozhan-writer/blob/main/使用说明.md
+    about: 先看看使用说明，大部分"怎么用"的问题这里都有答案
+  - name: 想改代码 / 加功能
+    url: https://github.com/misty-grove/mozhan-writer/blob/main/CONTRIBUTING.md
+    about: 提交前请先读贡献指南，特别是那四条不许破的约定
