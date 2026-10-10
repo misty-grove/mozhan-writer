@@ -6,6 +6,23 @@ test-panels/
 .DS_Store
 *.log
 
+# --- 凭据与环境变量：绝不进公开仓库 ---
+# 任何本地填了 API Key / 令牌的 .env* 文件（本应用本身把 Key 存 localStorage，
+# 正常不会有这些文件，这里是兜底，防止哪天手工建了一个 .env 顺手提交上去）。
+.env
+.env.*
+*.local
+# 桌面端 / 安卓端可能落下的凭据与证书
+*.p12
+*.pfx
+*.pem
+credentials.json
+
+# 编辑器 / IDE 个人配置
+.vscode/settings.json
+.idea/
+*.swp
+
 # e2e 的截图与报告落点。写在工程内是为了不用绝对路径（换台机器 clone 下来就能跑），
 # 每次跑都会重生成，随时可删。
 .e2e-shots/

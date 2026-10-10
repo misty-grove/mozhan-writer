@@ -134,7 +134,7 @@ const DST = winPath(DST_PARENT)
  * 如果这个目录落在低完整性（Low Mandatory Level）的卷/目录树上，
  * 子进程起来后会在 10 秒左右静默消失 —— 调试端口跟着一起没了，
  * 表现成「等 桌面端调试端口 超时」，非常误导（看着像应用挂不起来，其实应用是好的）。
- * 参考 esbuild 那次（见 F:/AI_Write_App/toolchain/env.sh）：同一个可执行文件换个目录就正常。
+ * 参考 esbuild 那次（见工具链的 env 脚本）：同一个可执行文件换个目录就正常。
  */
 const WV2_PROFILE = process.env.WEBVIEW2_USER_DATA_FOLDER || join(TMP_BASE, 'writer-desktop-e2e', 'webview2-profile')
 

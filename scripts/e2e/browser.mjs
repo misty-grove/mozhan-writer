@@ -24,7 +24,7 @@ import { join, resolve } from 'node:path'
 const ROOT = resolve(import.meta.dirname, '../..')
 const URL = process.env.E2E_URL || 'http://127.0.0.1:5199/'
 // 截图落在工程内的 .e2e-shots（已 gitignore），跟着仓库走。
-// 这里原本写的是 F:/AI/e2e-shots —— 一个绝对路径，别人 clone 下来必挂。
+// 早先写的是一个硬编码绝对路径，别人 clone 下来必挂，已改成工程内相对路径。
 const SHOTS = process.env.E2E_SHOTS || join(ROOT, '.e2e-shots')
 const PORT = Number(process.env.E2E_PORT || 9333)
 const WORK = '端到端验收作品'
