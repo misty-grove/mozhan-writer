@@ -169,8 +169,19 @@ async function doImport() {
             </select>
           </label>
           <label class="small">导入到新卷（可留空）<input v-model="volumeName" :disabled="busy" placeholder="例如：旧稿" /></label>
-          <label class="small">自定义标题正则（可选）<input v-model="customPattern" :disabled="busy" placeholder="如 ^§\d+" @change="resplit" /></label>
+          <label class="small"
+            >自定义标题正则（进阶 · 可留空）<input
+              v-model="customPattern"
+              :disabled="busy"
+              placeholder="如 ^第\d+章"
+              @change="resplit"
+          /></label>
         </div>
+
+        <p class="small dim hint">
+          正则不会写就留空（留空时按上面的方式自动切）。<code>^第\d+章</code> 能认出「第123章」：
+          <code>^</code> 行首、<code>\d</code> 任意数字、<code>+</code> 一个以上。
+        </p>
 
         <div v-if="encoding" class="row small meta">
           <span class="tag dim">编码 {{ encoding }}</span>
@@ -207,13 +218,13 @@ async function doImport() {
         <p v-if="err" class="err-box small">{{ err }}</p>
 
         <p class="small dim">
-          导入只会往 <code>正文/</code> 里追加新章节，已有章节一个都不会动。导入的正文按「草稿」入库。
-          把 <code>全稿.txt</code> 直接拖进作品文件夹，也能在这里找到它。
+          导入只会往 <code>正文/</code> 里追加新章节，已有章节一个都不会动；进来的正文按「草稿」入库。
+          也可以把 <code>全稿.txt</code> 直接拖进作品文件夹，在这里同样读得到。
         </p>
         <p class="small dim">
           手里这份是<b>大纲 / 卷纲 / 章纲</b>而不是正文？
           <button class="text small" :disabled="busy" @click="emit('import-outline')">走大纲导入</button>
-          （那里认 Word 的标题层级和表格，写进卷纲与章纲）。
+          <span class="blk">那里认 Word 的标题层级和表格，写进卷纲与章纲。</span>
         </p>
 
         <div class="row">
@@ -308,8 +319,26 @@ code {
   background: var(--line-soft);
   padding: 1px 5px;
   border-radius: 3px;
+  /* 代码片段不许在中间断开：「正文/」被拆成两行时，右半边看着像多出一个怪符号 */
+  white-space: nowrap;
 }
+.blk {
+  display: block;
+  margin-top: 2px;
+}
+.hint {
+  margin: 2px 0 0;
+  line-height: 1.6;
+}
+/* 下拉框不许写死高度。
+ *
+ * 写死过 26px：13px 的汉字要 17px 行高，减去上下 padding 12px 和边框 2px，
+ * 内容盒只剩 12px —— 每个字上下各削掉 2.5px，「第X章」的「章」被削成了「音」，
+ * 作者报上来是「导入稿件处有乱码」。而且它比旁边两个 31px 的输入框矮一截，
+ * 三个控件对不齐。
+ *
+ * 这里不猜高度：交给 flex 撑满同一行，旁边输入框多高它就多高。 */
 .grid3 select {
-  height: 26px;
+  flex: 1 1 auto;
 }
 </style>

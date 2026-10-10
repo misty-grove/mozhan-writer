@@ -1928,6 +1928,56 @@ async function main() {
     )
   }
 
+  /* 51. 字不许被自己的样式削掉（2026-10-10 作者报「导入稿件处有乱码」）
+     真凶不是编码。ImportDialog 给下拉框写死了 height: 26px：13px 的汉字要 17px 行高，
+     减去上下 padding 12px 与边框 2px，内容盒只剩 12px —— 每个字上下各削 2.5px，
+     「自动按「第X章」」的「章」被削成了「音」，作者看到的就是乱码；顺带它比旁边
+     两个 31px 的输入框矮一截，三个控件对不齐。
+     行为证据在 e2e §7.14（量的是真实控件的像素），这里钉源头：**不许给下拉框定高**。
+     定高在别的机器/别的字号下偶然没事，所以只靠肉眼看截图是抓不住的。 */
+  {
+    const read = readSrc
+    const walk = (dir: string): string[] => {
+      const out: string[] = []
+      for (const e of readdirSync(new URL('../' + dir, import.meta.url), { withFileTypes: true })) {
+        const rel = dir + '/' + e.name
+        if (e.isDirectory()) out.push(...walk(rel))
+        else if (/\.(css|vue)$/.test(e.name)) out.push(rel)
+      }
+      return out
+    }
+    const offenders: string[] = []
+    for (const f of ['src/styles/global.css', ...walk('src/components'), ...walk('src/views')]) {
+      const src = read(f)
+      // 逐条规则看：选择器里点了 select 的规则，块内不许出现定高
+      for (const m of src.matchAll(/([^{}]*select[^{}]*)\{([^}]*)\}/g)) {
+        const [, sel, body] = m
+        // 只看真的在给 select 自己定高，`:not(select)`、`select option` 之类不算
+        if (!/\bselect\b/.test(sel.replace(/:not\([^)]*\)/g, ''))) continue
+        const h = body.match(/(?:^|;|\s)height:\s*(\d+(?:\.\d+)?)px/)
+        if (h) offenders.push(`${f}  ${sel.trim()}  height: ${h[1]}px`)
+      }
+    }
+    check(
+      '字号安全：下拉框不许写死高度（13px 的字要 17px 行高，写死了上下就削字 → 看着像乱码）',
+      offenders.length === 0,
+      offenders.join(' | ')
+    )
+    const imp = readSrc('src/components/ImportDialog.vue')
+    check(
+      '导入稿件：切章方式的下拉框改成跟着输入框一起撑高（不写数字，就不怕换字号）',
+      /\.grid3 select \{[\s\S]{0,200}?flex: 1 1 auto/.test(imp) && !/\.grid3 select \{[\s\S]{0,200}?height:/.test(imp)
+    )
+    check(
+      '导入稿件：正则那格给了人话提示（^ / \\d / + 不能是作者看不懂的乱符）',
+      /如 \^第\\d\+章/.test(imp) && /正则不会写就留空/.test(imp)
+    )
+    check(
+      '导入稿件：正文/ 与 全稿.txt 这类代码片段不许在中间断行（断了右半边像多出一个怪符号）',
+      /code \{[\s\S]{0,200}?white-space: nowrap/.test(imp)
+    )
+  }
+
   console.log(failures === 0 ? '\n全部通过 ✅' : `\n失败 ${failures} 项 ❌`)
   process.exit(failures === 0 ? 0 : 1)
 }

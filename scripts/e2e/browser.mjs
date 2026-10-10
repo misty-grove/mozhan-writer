@@ -507,9 +507,118 @@ try {
 
   /* ---------- 7.7 导入已有稿件 ---------- */
   section('7.7 导入已有稿件（真实文件输入框）')
+
+  /* 控件里的字会不会被自己的样式削掉（作者报「导入稿件处有乱码」）。
+     量的是**真实控件的像素**：字需要的行高 vs 实际内容盒高度。
+     真凶是下拉框被写死 height:26px —— 13px 的汉字要 17px 行高，减去 padding 12px 与
+     边框 2px，内容盒只剩 12px，每个字上下各削 2.5px，「自动按「第X章」」的「章」
+     被削成了「音」。换台机器、换个字号偶然就没事，所以不吃肉眼那一套。 */
+  const scanControls = () =>
+    page.evaluate(`
+      const out = []
+      const px = (v) => parseFloat(v) || 0
+      const tag = (el) => {
+        const parts = []
+        let cur = el
+        for (let i = 0; i < 3 && cur && cur !== document.body; i++) {
+          let s = cur.tagName.toLowerCase()
+          if (typeof cur.className === 'string' && cur.className.trim()) s += '.' + cur.className.trim().split(/\\s+/).slice(0, 1)
+          parts.unshift(s)
+          cur = cur.parentElement
+        }
+        return parts.join('>')
+      }
+      const measure = (s, text) => {
+        const p = document.createElement('div')
+        p.style.cssText = 'position:absolute;left:-9999px;top:0;white-space:nowrap;margin:0;padding:0;border:0;' +
+          'font-family:' + s.fontFamily + ';font-size:' + s.fontSize + ';font-weight:' + s.fontWeight + ';line-height:' + s.lineHeight
+        p.textContent = text
+        document.body.appendChild(p)
+        const r = p.getBoundingClientRect()
+        const o = { h: +r.height.toFixed(1), w: +r.width.toFixed(1) }
+        p.remove()
+        return o
+      }
+      const NON_TEXT = /^(checkbox|radio|range|color|file|image|submit|reset|hidden)$/i
+      for (const el of document.querySelectorAll('select, input, button')) {
+        const s = getComputedStyle(el)
+        if (s.display === 'none' || s.visibility === 'hidden') continue
+        const r = el.getBoundingClientRect()
+        if (r.width < 2 || r.height < 2) continue
+        const t = el.tagName.toUpperCase()
+        if (t === 'INPUT' && NON_TEXT.test(el.type || 'text')) continue
+        const txt = t === 'SELECT' ? (el.options[el.selectedIndex]?.text || '')
+          : t === 'INPUT' ? (el.value || el.getAttribute('placeholder') || '')
+          : el.textContent.trim()
+        if (!txt) continue
+        const contentH = r.height - px(s.paddingTop) - px(s.paddingBottom) - px(s.borderTopWidth) - px(s.borderBottomWidth)
+        const contentW = r.width - px(s.paddingLeft) - px(s.paddingRight) - px(s.borderLeftWidth) - px(s.borderRightWidth)
+        const oneLine = t !== 'BUTTON' || s.whiteSpace === 'nowrap' || s.whiteSpace === 'pre'
+        const m = measure(s, '汉字Xg')
+        if (oneLine && contentH + 0.5 < m.h) out.push({ why: '纵向削字', el: tag(el), txt: txt.slice(0, 20), contentH: +contentH.toFixed(1), need: m.h })
+        if (t !== 'BUTTON') {
+          const tw = measure(s, txt).w
+          if (tw > contentW + 1) out.push({ why: '横向切字', el: tag(el), txt: txt.slice(0, 20), contentW: +contentW.toFixed(1), need: tw })
+        }
+      }
+      return out
+    `)
+
   const fx = writeFixtures()
   await page.clickByText('.right button', '导入稿件')
   await page.waitFor("document.querySelector('.dialog')", { label: '导入对话框打开' })
+
+  /* 就着刚打开的这个弹窗把「三个控件」量清楚：这一屏是作者截图报错的那一屏 */
+  const grid = await page.evaluate(`return (() => {
+    const px = (v) => parseFloat(v) || 0
+    const sel = document.querySelector('.dialog .grid3 select')
+    const inp = document.querySelector('.dialog .grid3 input')
+    const cs = getComputedStyle(sel)
+    const r = (e) => e.getBoundingClientRect()
+    const contentH = r(sel).height - px(cs.paddingTop) - px(cs.paddingBottom) - px(cs.borderTopWidth) - px(cs.borderBottomWidth)
+    const contentW = r(sel).width - px(cs.paddingLeft) - px(cs.paddingRight) - px(cs.borderLeftWidth) - px(cs.borderRightWidth)
+    const probe = document.createElement('div')
+    probe.style.cssText = 'position:absolute;left:-9999px;top:0;white-space:nowrap;margin:0;padding:0;border:0;font-family:' + cs.fontFamily + ';font-size:' + cs.fontSize + ';line-height:' + cs.lineHeight
+    document.body.appendChild(probe)
+    let widest = { text: '', w: 0 }
+    for (const o of sel.options) {
+      probe.textContent = o.text
+      const w = probe.getBoundingClientRect().width
+      if (w > widest.w) widest = { text: o.text, w: +w.toFixed(1) }
+    }
+    probe.textContent = '汉字Xg'
+    const lineH = +probe.getBoundingClientRect().height.toFixed(1)
+    probe.remove()
+    return { selH: +r(sel).height.toFixed(1), inpH: +r(inp).height.toFixed(1), contentH: +contentH.toFixed(1), contentW: +contentW.toFixed(1), lineH, widest }
+  })()`)
+  note('    切章下拉框：高 ' + grid.selH + 'px · 旁边输入框 ' + grid.inpH + 'px · 内容盒 ' + grid.contentH + 'px · 一行字要 ' + grid.lineH + 'px')
+  check('切章方式下拉框与旁边输入框一样高（三格对齐，不再矮一截）', Math.abs(grid.selH - grid.inpH) <= 1, `下拉 ${grid.selH} / 输入 ${grid.inpH}`)
+  check('下拉框的内容盒装得下一行汉字（装不下就会削字，第X章 看成 第x音）', grid.contentH + 0.5 >= grid.lineH, `内容盒 ${grid.contentH} < 需要 ${grid.lineH}`)
+  check(
+    '三个切章方式选项都完整显示（最长那个也不被横切）',
+    grid.widest.w <= grid.contentW,
+    `最宽选项「${grid.widest.text}」需要 ${grid.widest.w}px，只有 ${grid.contentW}px`
+  )
+  const dlgText77 = await page.evaluate("return document.querySelector('.dialog')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check(
+    '正则那格换成人话（示例不再是 § 这种符号，并说明留空即可）',
+    dlgText77.includes('正则不会写就留空') && dlgText77.includes('^第\\d+章') && !dlgText77.includes('§'),
+    dlgText77.slice(0, 120)
+  )
+  check(
+    '说明文字不再被从中间劈开（大纲那段自成一行，「纲）。」不再孤零零占一行）',
+    await page.evaluate("const s = document.querySelector('.dialog .blk'); return !!s && getComputedStyle(s).display === 'block'")
+  )
+  check('导入弹窗里没有控件在削字 / 切字', (await scanControls()).length === 0, JSON.stringify(await scanControls()))
+
+  // 高倍局部图：修的就是这一处，回看时一眼能确认字没被削
+  const gridBox = await page.evaluate("const r = document.querySelector('.dialog .grid3').getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }")
+  const clipShot = await page.send('Page.captureScreenshot', {
+    format: 'png',
+    clip: { x: gridBox.x - 8, y: gridBox.y - 8, width: gridBox.w + 16, height: gridBox.h + 16, scale: 3 }
+  })
+  writeFileSync(join(SHOTS, '36-import-grid.png'), Buffer.from(clipShot.data, 'base64'))
+
 
   await page.setFileInput('.dialog input[type=file]', [fx.utf8])
   await page.waitFor("document.querySelectorAll('.dialog .ch-row').length === 2", { timeout: 8000, label: '预览出 2 章' })
@@ -1700,6 +1809,62 @@ try {
   )
   await shot(page, '35-outline-tags.png')
   await closeDlg()
+
+  /* ---------- 7.14 全界面扫一遍：还有没有别处的字被裁 ----------
+
+     §7.7 已经在作者报错的那一屏量过了（下拉框被写死 26px → 「章」削成「音」）。
+     这一节管的是**别处有没有同一个手滑**：每个视图、九个面板、五个弹窗的控件全量一遍。
+     页面此刻还停在 §7.12 的 ?mobile=1 形态（输入框字号被顶到 16px）—— 那不是坏事：
+     换一套字号还满足「内容盒 ≥ 一行字」，比只在一个字号下量过更值。 */
+  section('7.14 全界面扫一遍：控件文字还有没有被裁的')
+  note('    （本节停在手机样式下量，输入框 16px；作者看到的桌面那一屏已在 §7.7 量过）')
+
+  // 别的地方也一起量一遍：这台机器上一个下拉框会出事，别处也可能是同一个手滑
+  const SURFACES = [
+    ['写作', async () => page.pressKey('1', { ctrl: true }), '.paper-col'],
+    ['看板', async () => page.pressKey('2', { ctrl: true }), '.board'],
+    ['统计', async () => page.pressKey('5', { ctrl: true }), '.stats']
+  ]
+  for (const [name, go, sel] of SURFACES) {
+    await page.evaluate('document.body.focus(); return true')
+    await go()
+    await page.waitFor(`document.querySelector(${JSON.stringify(sel)})`, { timeout: 8000, label: name })
+    await sleep(400)
+    const bad = await scanControls()
+    check(`「${name}」视图没有控件在削字 / 切字`, bad.length === 0, JSON.stringify(bad))
+  }
+  await page.evaluate('document.body.focus(); return true')
+  await page.pressKey('1', { ctrl: true })
+  await sleep(400)
+
+  if (!(await page.evaluate("return !!document.querySelector('.dock')"))) {
+    await page.pressKey('j', { ctrl: true })
+  }
+  await page.waitFor("document.querySelector('.dock')", { timeout: 8000, label: '右侧面板' })
+  const tabs74 = await page.evaluate("return Array.from(document.querySelectorAll('.dock .tabs button')).map((b) => b.textContent.trim())")
+  const badTabs = []
+  for (const t of tabs74) {
+    await page.clickByText('.dock .tabs button', t)
+    await sleep(320)
+    for (const b of await scanControls()) badTabs.push(t + ' → ' + JSON.stringify(b))
+  }
+  check(`九个面板都没有控件在削字 / 切字（查了 ${tabs74.length} 个）`, badTabs.length === 0, badTabs.slice(0, 3).join(' | '))
+
+  const DIALOGS74 = [
+    ['大纲', async () => page.clickByText('.bar button', '大纲')],
+    ['导入大纲', async () => page.clickByText('.right button', '导入大纲')],
+    ['导出', async () => page.clickByText('.right button', '导出')],
+    ['快照', async () => page.clickByText('.right button', '快照')],
+    ['设置', async () => page.clickByText('.right button', '设置')]
+  ]
+  const badDlgs = []
+  for (const [name, open] of DIALOGS74) {
+    await open()
+    await sleep(700)
+    for (const b of await scanControls()) badDlgs.push(name + ' → ' + JSON.stringify(b))
+    await closeDlg()
+  }
+  check('五个弹窗都没有控件在削字 / 切字', badDlgs.length === 0, badDlgs.slice(0, 3).join(' | '))
 
   /* ---------- 8. 报错汇总 ---------- */
   section('8. 控制台与网络')
