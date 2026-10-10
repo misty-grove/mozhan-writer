@@ -73,8 +73,8 @@ function findExe() {
     ? resolve(process.env.CARGO_TARGET_DIR)
     : join(PROJECT, 'src-tauri', 'target')
   const candidates = [
-    join(targetBase, 'release', 'offline-novel-writer.exe'),
-    join(targetBase, 'debug', 'offline-novel-writer.exe')
+    join(targetBase, 'release', 'mozhan.exe'),
+    join(targetBase, 'debug', 'mozhan.exe')
   ]
   for (const c of candidates) if (existsSync(c)) return c
   return null
@@ -112,7 +112,7 @@ function killTree(pid) {
 function sweepAppStragglers() {
   if (process.platform !== 'win32') return
   try {
-    execFileSync('taskkill', ['/IM', 'offline-novel-writer.exe', '/F'], { stdio: 'ignore' })
+    execFileSync('taskkill', ['/IM', 'mozhan.exe', '/F'], { stdio: 'ignore' })
   } catch {}
 }
 
@@ -256,7 +256,7 @@ try {
   await launchAndAttach()
 
   const title = await page.evaluate('return document.title')
-  check(title === '离线写作工作台', '窗口标题正确', title)
+  check(title === '墨栈写作台 · 本地中文网文写作 AI 辅助', '窗口标题正确', title)
 
   const bridge = await page.evaluate(`
     const i = window.__TAURI_INTERNALS__

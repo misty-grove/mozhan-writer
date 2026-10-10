@@ -373,8 +373,24 @@ async function main() {
   /* 大纲与章纲（P1-19）：本地骨架 → 写进 大纲/大纲.md */
   {
     const { el, text, errs } = await mount('OutlineDialog', OutlineDialog, 200)
-    check('大纲对话框显示卷章数', /共 \d+ 卷 · \d+ 章/.test(text), text.slice(0, 160))
+    // 2026-10-10 起：卷数/章数是**作者填的输入框**，不再自动算一段「共 N 卷 · M 章」给人看
+    check(
+      '大纲：规模是三个输入框（卷数/章数/每章字数），没有自动算出来的卷章统计行',
+      el.querySelectorAll('.shape input').length === 3 && !/共 \d+ 卷 · \d+ 章/.test(text),
+      text.slice(0, 160)
+    )
+    check('大纲：目标字数跟着规模算出来（约 N 万字）', /约 \d+(\.\d+)? 万字/.test(text), text.slice(0, 120))
     check('大纲对话框预览骨架', el.querySelectorAll('.vol').length >= 1, String(el.querySelectorAll('.vol').length))
+    const chapterInput = el.querySelectorAll('.shape input')[1] as HTMLInputElement
+    chapterInput.value = '12'
+    chapterInput.dispatchEvent(new Event('input'))
+    chapterInput.dispatchEvent(new Event('change'))
+    await nextTick()
+    check(
+      '大纲：章数改成 12，预览跟着重排（4 卷 × 3 章）',
+      /第1章-第3章/.test(el.textContent || ''),
+      (el.textContent || '').slice(0, 200)
+    )
     const writeBtn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('写入大纲文件')) as HTMLElement | undefined
     check('有写入大纲按钮', !!writeBtn)
     writeBtn?.click()

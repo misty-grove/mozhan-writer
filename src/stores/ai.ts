@@ -77,7 +77,7 @@ function cfg() {
   return { ...settings.ai, apiKey: settings.ai.apiKey }
 }
 
-const BASE_RULES = `你是一个离线写作工作台里的写作助手，服务于一位**有判断力的作者**。
+const BASE_RULES = `你是一个中文网文写作台（墨栈）里的写作助手，服务于一位**有判断力的作者**。
 
 铁律：
 1. 你的产出是「候选文本」，不会被自动写入正文。作者不采纳，等于没写。

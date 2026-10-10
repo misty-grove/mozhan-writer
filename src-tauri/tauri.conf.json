@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "离线写作工作台",
+  "productName": "墨栈写作台",
   "identifier": "dev.writerbench.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "离线写作工作台",
+        "title": "墨栈写作台 · 本地中文网文写作 AI 辅助",
         "width": 1280,
         "height": 860,
         "minWidth": 960,
@@ -42,8 +42,8 @@
     ],
     "useLocalToolsDir": true,
     "category": "Productivity",
-    "shortDescription": "离线优先的本地写作工作台",
-    "longDescription": "把作品直接写在你自己磁盘上的写作工作台：目录即数据模型，记事本也能改；不联网也能用；断网、换电脑、十年后打开都还在。",
+    "shortDescription": "本地中文网文写作台 · AI 辅助（离线优先）",
+    "longDescription": "稿子直接写在你自己磁盘上的中文网文写作台：目录即数据模型，记事本也能改；配好 API 就有 AI 续写 / 纠错 / 大纲推荐，不配就是纯离线写作工具；断网、换电脑、十年后打开都还在。",
     "windows": {
       "nsis": {
         "installMode": "currentUser",
@@ -52,7 +52,7 @@
         ],
         "displayLanguageSelector": false,
         "compression": "lzma",
-        "startMenuFolder": "离线写作工作台"
+        "startMenuFolder": "墨栈写作台"
       },
       "wix": {
         "language": "zh-CN"

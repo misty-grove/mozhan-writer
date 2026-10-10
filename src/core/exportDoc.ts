@@ -117,7 +117,7 @@ export async function toDocxBlob(
     }
   })
   const doc = new Document({
-    creator: author || '离线写作工作台',
+    creator: author || '墨栈写作台',
     title,
     styles: { default: { document: { run: { font: '宋体', size: 24 } } } },
     sections: [{ children }]

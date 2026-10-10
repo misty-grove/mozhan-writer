@@ -8,7 +8,7 @@ import { attachBrowser, sleep } from './cdp.mjs'
 
 const PROJECT = resolve(import.meta.dirname, '../..')
 const TMP_BASE = process.env.TMP || process.env.TEMP || PROJECT
-const EXE = process.argv[2] || join(process.env.CARGO_TARGET_DIR || join(PROJECT, 'src-tauri/target'), 'release/offline-novel-writer.exe')
+const EXE = process.argv[2] || join(process.env.CARGO_TARGET_DIR || join(PROJECT, 'src-tauri/target'), 'release/mozhan.exe')
 const PORT = Number(process.env.DESKTOP_PORT || 9447)
 const SHOT = join(PROJECT, '.e2e-shots', '_probe.png')
 

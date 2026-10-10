@@ -295,8 +295,8 @@ function fmt(ts: string) {
         <!-- 印章式的产品标记：用 CSS 画的，不引外部图片（离线应用不该有外链资源） -->
         <i class="mark" aria-hidden="true">写</i>
         <div class="col titles">
-          <h1>离线写作工作台</h1>
-          <p class="muted small">文件目录就是你的书。不联网也能写完一整本。</p>
+          <h1>墨栈写作台</h1>
+          <p class="muted small">本地中文网文写作台 · AI 辅助。文件目录就是你的书，不联网也能写完一整本。</p>
         </div>
       </div>
       <div class="row">

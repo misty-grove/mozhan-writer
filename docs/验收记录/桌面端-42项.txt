@@ -1,4 +1,6 @@
 时间：2026-10-08T03:52:00.585Z
+（注：本条是**改名前**的原始记录，里面出现的产品名「离线写作工作台」= 现在的「墨栈写作台」，
+  exe 名 `offline-novel-writer.exe` = 现在的 `mozhan.exe`。内容原样保留，不做改写。）
 可执行文件：C:\Users\<作者>\AppData\Local\离线写作工作台\offline-novel-writer.exe
 作品根目录：E:\Worksplace\write-app-tmp\writer-desktop-e2e\桌面验收作品·中文目录
 结果：通过 42 项，失败 0 项

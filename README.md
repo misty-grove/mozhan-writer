@@ -1,4 +1,4 @@
-# 离线写作工作台 · 实现说明
+# 墨栈写作台 · 实现说明
 
 对应文档：`AI写作应用开发文档.docx`（v1.1）
 实现范围：**P0（9 项）+ P1（10 项）+ P2（11 项）全部完成**，对应文档优先级表里 31 个条目已全覆盖。
@@ -744,8 +744,8 @@ npm run desktop:verify      # 出安装包 + 在真实窗口里验收（42 项�
 
 | 产物 | 大小 | 说明 |
 |---|---|---|
-| `离线写作工作台_0.1.0_x64-setup.exe` | 1.58 MiB | NSIS，**装当前用户**（不弹 UAC）、开始菜单建「离线写作工作台」 |
-| `离线写作工作台_0.1.0_x64_zh-CN.msi` | 2.12 MiB | WiX 中文 MSI |
+| `墨栈写作台_0.1.0_x64-setup.exe` | 1.76 MiB | NSIS，**装当前用户**（不弹 UAC）、开始菜单建「墨栈写作台」 |
+| `墨栈写作台_0.1.0_x64_zh-CN.msi` | 2.12 MiB | WiX 中文 MSI（已废弃，只出 NSIS） |
 
 本仓库 `release/` 里放的**就是这两个成品**（连同 `SHA256SUMS.txt` 与 `安装说明.md`）。
 构建完把 `bundle/` 里的两个文件拷过去即可；`release/` 已 gitignore，不进版本库。
@@ -754,8 +754,8 @@ npm run desktop:verify      # 出安装包 + 在真实窗口里验收（42 项�
 42 项真机验收 → 卸载。装出来的目录长这样，卸载后目录、开始菜单、注册表卸载项、进程全无残留：
 
 ```
-%LOCALAPPDATA%\离线写作工作台\
-├─ offline-novel-writer.exe    3.8 MB
+%LOCALAPPDATA%\墨栈写作台\
+├─ mozhan.exe                  3.9 MB
 ├─ WebView2Loader.dll          157 KB
 └─ uninstall.exe                77 KB
 ```

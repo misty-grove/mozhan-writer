@@ -540,6 +540,98 @@ async function main() {
   check('AI 提示词要求只输出表格', oprompt.includes('| 章节 | 目标 |') && oprompt.includes('不要任何解释'))
   check('AI 提示词带上现有骨架', oprompt.includes('第001章'))
 
+  /* 25b. 卷数 / 章数由作者定（2026-10-10）
+     以前是「按目标字数算一个 4 卷 67 章给你看」—— 作者既没认领过它，又总跟想的不一样。
+     现在：章数可以显式给；导入大纲后按大纲「重排」，原有章节内容一个字不动。 */
+  const fixed = outline.buildSkeleton({ title: 'T', chapters: 30, chapterWords: 3000, volumes: 3 })
+  check(
+    '显式章数：卷数与章数听作者的',
+    fixed.volumes.length === 3 && outline.countChapters(fixed) === 30,
+    `${fixed.volumes.length} 卷 ${outline.countChapters(fixed)} 章`
+  )
+  check('显式章数：目标字数跟着算出来，不再另说一套', fixed.totalWords === 90000, String(fixed.totalWords))
+  check('卷数比章数多时按章数封顶（不许出现 0 章的卷）', outline.buildSkeleton({ title: 'T', chapters: 2, volumes: 9 }).volumes.length === 2)
+  check(
+    '章数不填时仍按字数反推（老调用方不受影响）',
+    Math.abs(outline.countChapters(outline.buildSkeleton({ title: 'T', targetWords: 200000, chapterWords: 3000 })) - 67) <= 2
+  )
+
+  const mkSkVol = (name: string, from: number, to: number): any => ({
+    name,
+    target: '',
+    start: from,
+    end: to,
+    chapters: Array.from({ length: to - from + 1 }, (_, i) => ({
+      title: `第${String(from + i).padStart(3, '0')}章`,
+      target: i === 0 ? '甲' : '',
+      words: 3000
+    }))
+  })
+  const uneven: any = { title: '书', volumes: [mkSkVol('第一卷', 1, 40), mkSkVol('第二卷', 41, 67)], totalWords: 201000, chapterWords: 3000 }
+  check('导入的形状原样保留：卷数/章数没变时 reshape 返回同一个对象', outline.reshapeSkeleton(uneven, 2, 67) === uneven)
+  const grown = outline.reshapeSkeleton(uneven, 2, 70)
+  check(
+    '加章：总量对了，原有章节一个不动、不均匀分卷也不被抹平',
+    outline.countChapters(grown) === 70 && grown.volumes[0].chapters[0].target === '甲' && grown.volumes[0].chapters.length >= 40,
+    JSON.stringify(grown.volumes.map((v) => v.chapters.length))
+  )
+  check(
+    '加章：多出来的补的是空坑（目标留白）',
+    grown.volumes[1].chapters[grown.volumes[1].chapters.length - 1].title === '第070章' &&
+      grown.volumes[1].chapters[grown.volumes[1].chapters.length - 1].target === ''
+  )
+  const shrunk = outline.reshapeSkeleton(uneven, 2, 30)
+  check('减章：从末尾截断，前面的章节与目标还在', outline.countChapters(shrunk) === 30 && shrunk.volumes[0].chapters[0].target === '甲')
+  const rev = outline.reshapeSkeleton(uneven, 5, 60)
+  check(
+    '改卷数：重排成 5 卷 60 章、范围首尾相接、每卷都有章',
+    rev.volumes.length === 5 &&
+      outline.countChapters(rev) === 60 &&
+      rev.volumes.every((v, i) => Number(v.start) <= Number(v.end) && (i === 0 || Number(v.start) === Number(rev.volumes[i - 1].end) + 1)) &&
+      rev.volumes.every((v) => v.chapters.length > 0),
+    JSON.stringify(rev.volumes.map((v) => [v.start, v.end]))
+  )
+  const rp = outline.recommendPrompt({
+    info: { title: 'T', author: '', brief: '', targetWords: 0, created: '' },
+    s: fixed,
+    tags: '男频、玄幻、100-150万字',
+    idea: '主角是个失业的修表匠',
+    material: ''
+  })
+  check('推荐提示词把标签、想法、规模都带上（三份输入 AI 都看得到）', rp.includes('男频、玄幻、100-150万字') && rp.includes('主角是个失业的修表匠') && rp.includes('共约 30 章'))
+  check('推荐提示词明说「想法」的优先级高于标签', /优先级更高/.test(rp))
+
+  /* 25c. 中文标签解析（2026-10-10）
+     「不要因为分词问题影响到工程」→ 零依赖纯函数、**不引分词库**（原生模块在
+     GNU 工具链上编不出来，一挂就是整个构建卡住）；但中文标点、全角字母、
+     没打分隔符的一长串都得认。 */
+  const tags = await import('@/core/tags')
+  check(
+    '中文标点都算分隔符（顿号 / 中英文逗号 / 分号 / 斜杠 / 空格）',
+    tags.parseTags('玄幻、都市，悬疑；科幻 灵异/末世').join('|') === '玄幻|都市|悬疑|科幻|灵异|末世',
+    tags.parseTags('玄幻、都市，悬疑；科幻 灵异/末世').join('|')
+  )
+  check('全角空格与全角逗号也认', tags.parseTags('玄幻，都市\u3000悬疑').join('|') === '玄幻|都市|悬疑')
+  check('去重 + 去首尾成对符号', tags.parseTags('「玄幻」、玄幻、“都市”').join('|') === '玄幻|都市', tags.parseTags('「玄幻」、玄幻、“都市”').join('|'))
+  check('全角字母数字折半角（ＡＩ 与 AI 是同一个标签）', tags.parseTags('ＡＩ、AI').join('|') === 'AI', tags.parseTags('ＡＩ、AI').join('|'))
+  check('篇幅标签里的短横不是分隔符（100-150万字 不许被切开）', tags.parseTags('100-150万字').join('|') === '100-150万字')
+  check('没打分隔符也能切（最长匹配当轻量分词）：男频玄幻 → 男频 + 玄幻', tags.parseTags('男频玄幻').join('|') === '男频|玄幻', tags.parseTags('男频玄幻').join('|'))
+  check('切出来的碎块留着（都市异能爽文 → 都市 + 异能 + 爽文）', tags.parseTags('都市异能爽文').join('|') === '都市|异能|爽文', tags.parseTags('都市异能爽文').join('|'))
+  check('认不出来的标签原样保留，不瞎猜', tags.parseTags('自创流派').join('|') === '自创流派', tags.parseTags('自创流派').join('|'))
+  check('超长的一整句不当标签（> 24 字丢掉）', tags.parseTags('这是一句很长很长的话用来测试标签长度上限是否真的生效').length === 0)
+  check(
+    '拼标签时不重新切分（自定义长标签不许被打散）',
+    tags.joinTags(['都市之最强系统', '男频', '男频']) === '都市之最强系统、男频',
+    tags.joinTags(['都市之最强系统', '男频', '男频'])
+  )
+  check(
+    '篇幅档与字数互推',
+    tags.lengthTagOf(1250000) === '100-150万字' && tags.wordsOfTag('100-150万字') === 1250000,
+    `${tags.lengthTagOf(1250000)} / ${tags.wordsOfTag('100-150万字')}`
+  )
+  check('篇幅档边界：20 万落在 0-50、250 万落在「200 万以上」', tags.lengthTagOf(200000) === '0-50万字' && tags.lengthTagOf(2500000) === '200万字以上')
+  check('标签解析零依赖：package.json 里没有任何分词库', !/jieba|nodejieba|segment|pkuseg|hanlp/i.test(readSrc('package.json')))
+
   /* 26. 插件机制（P2-30）：声明式，不执行脚本 */
   const plugins = await import('@/core/plugins')
   const plugTpl = '# {{书名}}\n\n作者：{{作者}}\n\n{{目录}}\n\n{{正文}}'
@@ -1806,6 +1898,17 @@ async function main() {
       '大纲：推荐模式存在（从零推荐故事线，材料或标签至少要给一样）',
       /recommendPrompt/.test(outline) && /recommendPrompt/.test(dlg) && /'recommend'/.test(dlg)
     )
+    check(
+      '大纲：卷数/章数是输入框（不再自动算一个给人看）',
+      /v-model\.number="shape\.volumes"/.test(dlg) && /v-model\.number="shape\.chapters"/.test(dlg) && /reshapeSkeleton/.test(dlg)
+    )
+    check('大纲：老的「共 X 卷 · Y 章」自动推导行已删掉', !/共 \{\{ active\.volumes\.length \}\}/.test(dlg))
+    check('大纲：导入大纲后会自动把规模填成它的样子', /watch\(parsed[\s\S]{0,120}?syncShape/.test(dlg))
+    check(
+      '大纲：推荐提示词带「想法」（标签 + 想法 + 材料三样都要进 AI）',
+      /idea: recIdea\.value/.test(dlg) && /idea\?: string/.test(outline)
+    )
+    check('大纲：标签与篇幅走 core/tags（零依赖纯函数，不引分词库）', /from '@\/core\/tags'/.test(dlg))
   }
 
   /* 50. 写作区稿纸不许塌缩（2026-10-09 的真实截图事故）

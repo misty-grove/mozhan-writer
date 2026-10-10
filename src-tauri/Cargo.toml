@@ -1,9 +1,9 @@
 [package]
-name = "offline-novel-writer"
+name = "mozhan"
 # 版本号的唯一来源。tauri.conf.json 里刻意不写 version，打包时从这里取，
 # 避免"改了 Cargo.toml 忘了改 json"这类事故。
 version = "0.1.0"
-description = "离线优先的本地写作工作台"
+description = "本地中文网文写作台 · AI 辅助（离线优先）"
 edition = "2021"
 rust-version = "1.77"
 publish = false

@@ -1,9 +1,9 @@
 {
-  "name": "offline-novel-writer",
+  "name": "mozhan",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "离线优先的本地写作工作台",
+  "description": "本地中文网文写作台 · AI 辅助（离线优先）",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",

@@ -1836,6 +1836,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mozhan"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "indexmap 1.9.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+]
+
+[[package]]
 name = "muda"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2141,20 +2155,6 @@ dependencies = [
  "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
-]
-
-[[package]]
-name = "offline-novel-writer"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "indexmap 1.9.3",
- "reqwest",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
 ]
 
 [[package]]

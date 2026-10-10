@@ -377,8 +377,8 @@ def plan_outputs(release: bool, ver: str) -> dict[Path, tuple[Path, int, str]]:
             (a for a in ABI_TAG.values() if f"-{a}-" in apk.name), "universal"
         )
         dest = RELEASE_DIR / (
-            f"离线写作工作台-{ver}-{tag}.apk" if release
-            else f"离线写作工作台-{ver}-{tag}-debug.apk"
+            f"墨栈写作台-{ver}-{tag}.apk" if release
+            else f"墨栈写作台-{ver}-{tag}-debug.apk"
         )
         prev = picked.get(dest)
         if prev is not None:

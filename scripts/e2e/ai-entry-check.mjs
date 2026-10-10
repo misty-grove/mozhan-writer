@@ -8,7 +8,7 @@ import { rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { attachBrowser, sleep } from './cdp.mjs'
 
-const EXE = process.argv[2] || 'F:\\AI\\Write\\离线写作工作台\\offline-novel-writer.exe'
+const EXE = process.argv[2] || 'F:\\AI\\Write\\墨栈写作台\\mozhan.exe'
 const PORT = 9555
 const TMP = 'E:\\Worksplace\\write_formation\\.tmp'
 const PROFILE = join(TMP, 'ai-entry-profile')

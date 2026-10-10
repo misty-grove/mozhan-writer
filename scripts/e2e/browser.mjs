@@ -175,7 +175,7 @@ try {
   await page.reload(1800)
 
   const homeText = await page.text()
-  check('首页渲染（离线写作工作台 / 新建作品）', homeText.includes('离线写作工作台') && homeText.includes('新建作品'))
+  check('首页渲染（墨栈写作台 / 新建作品）', homeText.includes('墨栈写作台') && homeText.includes('新建作品'))
   check('浏览器被识别为支持 FSA（无「请用 Edge / Chrome」警告）', !homeText.includes('请用 Edge'))
   await shot(page, '01-home.png')
 
@@ -1190,7 +1190,7 @@ try {
   await page.clickByText('.right button', '关闭作品')
   await page.waitFor("document.querySelector('.home')", { timeout: 8000, label: '回到首页' })
   const homeAfterClose = await page.text()
-  check('降级：关闭作品后回到首页', homeAfterClose.includes('离线写作工作台'))
+  check('降级：关闭作品后回到首页', homeAfterClose.includes('墨栈写作台'))
   check('降级：首页给出「继续写」入口（浏览器里那份还在）', homeAfterClose.includes('浏览器里还存着上次的沙盒作品') && homeAfterClose.includes('继续写'), homeAfterClose.slice(0, 160))
   check('降级：入口上标明已同步（不会让人以为还有东西没导出）', /已同步/.test(homeAfterClose), homeAfterClose.slice(0, 200))
   await shot(page, '25-sandbox-closed.png')
@@ -1520,6 +1520,186 @@ try {
 
   await page.send('Emulation.setTouchEmulationEnabled', { enabled: false, maxTouchPoints: 1 })
   await page.setViewport(1440, 900)
+
+  /* ---------- 7.13 大纲：规模自己定 + 中文标签与想法 ---------- */
+  section('7.13 大纲：卷数/章数自己定 · 导入后自动填 · 中文标签与想法')
+
+  const openOutlineDlg = async () => {
+    await page.clickByText('.bar button', '大纲')
+    await page.waitFor("document.querySelector('.dialog .shape')", { timeout: 8000, label: '大纲对话框（规模区）' })
+  }
+  const closeDlg = async () => {
+    await page.click('.dialog > .head .btn-icon')
+    await page.waitFor("!document.querySelector('.dialog')", { timeout: 5000, label: '对话框关闭' })
+  }
+  const odlgText = () => page.evaluate("return document.querySelector('.dialog')?.innerText.replace(/\\s+/g, ' ') || ''")
+  const shapeVals = () =>
+    page.evaluate("return Array.from(document.querySelectorAll('.dialog .shape input')).map((i) => i.value).join('/')")
+  const setShape = (idx, val) =>
+    page.evaluate(`
+      const ins = Array.from(document.querySelectorAll('.dialog .shape input'))
+      const el = ins[${idx}]
+      el.focus()
+      el.value = ${JSON.stringify(String(val))}
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    `)
+
+  await openOutlineDlg()
+  check(
+    '大纲：规模是三个输入框（卷数 / 章数 / 每章字数），不是一段算好给人看的文字',
+    (await page.evaluate("return document.querySelectorAll('.dialog .shape input').length")) === 3,
+    await shapeVals()
+  )
+  const t1 = await odlgText()
+  check('大纲：没有「共 N 卷 · M 章」那种自动算出来的行（没导入大纲时它最没意义）', !/共\s*\d+\s*卷/.test(t1), t1.slice(0, 200))
+  await shot(page, '33-outline-shape.png')
+
+  await setShape(1, 12)
+  await sleep(220)
+  const t2 = await odlgText()
+  check('大纲：章数改成 12，预览跟着重排（4 卷 × 3 章）', /第1章-第3章/.test(t2) && /第10章-第12章/.test(t2), t2.slice(0, 220))
+
+  // 用现有大纲：粘进去 → 卷数/章数**按大纲自动填好**，作者照样能改
+  await page.clickByText('.dialog .row.small button', '用现有大纲')
+  await sleep(180)
+  const OUTLINE2 = [
+    '# 林晚的雨季',
+    '',
+    '## 第一卷 启程（第1章-第3章）',
+    '',
+    '| 章节 | 目标 | 字数 |',
+    '| --- | --- | --- |',
+    '| 第001章 | 甲 | 3000 |',
+    '| 第002章 | 乙 | 3000 |',
+    '| 第003章 | 丙 | 3000 |',
+    '',
+    '## 第二卷 重逢（第4章-第5章）',
+    '',
+    '| 章节 | 目标 | 字数 |',
+    '| --- | --- | --- |',
+    '| 第004章 | 丁 | 3000 |',
+    '| 第005章 | 戊 | 3000 |'
+  ].join('\n')
+  await page.evaluate(
+    `const ta = document.querySelector('.dialog textarea'); ta.value = ${JSON.stringify(OUTLINE2)}; ta.dispatchEvent(new Event('input')); return true`
+  )
+  await sleep(260)
+  check('大纲：粘进大纲后卷数/章数自动填成大纲的样子（2 卷 5 章）', (await shapeVals()) === '2/5/3000', await shapeVals())
+  const t3 = await odlgText()
+  check('大纲：预览照大纲原文显示（不均匀的分卷 3/2 不被抹平）', /第1章-第3章/.test(t3) && /第4章-第5章/.test(t3), t3.slice(0, 240))
+
+  await setShape(1, 9)
+  await setShape(0, 3)
+  await sleep(260)
+  const t4 = await odlgText()
+  check('大纲：改卷数/章数后重排（3 卷 9 章，范围首尾相接）', /第1章-第3章/.test(t4) && /第7章-第9章/.test(t4), t4.slice(0, 240))
+  await shot(page, '34-outline-reshape.png')
+  await closeDlg()
+
+  /* 配一套「假」AI 只为解锁 AI 入口（推荐页才会出现在界面上）。
+     这里不点「测试连接」，也不点生成 —— 全程零网络请求，不会污染后面的控制台检查。
+     注意：页面此刻还停在 §7.12 的 ?mobile=1 形态下（顶栏那些按钮是 `data-mobile="hide"`
+     收起来的），所以这里用**直接点名点击**，不走「可见才算数」的那条路。 */
+  await page.evaluate("const b = document.querySelector('.bar .aibtn'); if (!b) return false; b.click(); return true")
+  await page.waitFor("document.querySelector('.dialog')", { timeout: 6000, label: '设置对话框' })
+  await page.clickByText('.dialog .tabs button', 'AI')
+  await sleep(150)
+  const fillByPh = (ph, val) =>
+    page.evaluate(`
+      const el = document.querySelector('.dialog input[placeholder=${JSON.stringify(ph)}]')
+      if (!el) return false
+      el.focus()
+      el.value = ${JSON.stringify(val)}
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      return true
+    `)
+  const okA = await fillByPh('https://api.deepseek.com', 'https://example.invalid/v1')
+  const okB = await fillByPh('sk-...', 'sk-e2e-not-a-real-key')
+  const okC = await fillByPh('deepseek-chat', 'e2e-model')
+  // 「AI 层开关」默认是「关闭」，得把它拨到「启用」—— 这一档也是 aiEnabled() 的必要条件
+  const okD = await page.evaluate(`
+    const sel = Array.from(document.querySelectorAll('.dialog select')).find((s) =>
+      Array.from(s.options).some((o) => (o.textContent || '').includes('AI 功能入口'))
+    )
+    if (!sel) return false
+    sel.selectedIndex = 0
+    sel.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  `)
+  await sleep(150)
+  check('设置：Base URL / Key / 模型名 / 开关都能配（只为解锁入口，不发请求）', okA && okB && okC && okD)
+  check(
+    '设置：填完就解锁 AI 层（不用重启）',
+    await page.evaluate("return document.querySelector('.dialog')?.innerText.includes('AI 层已解锁')")
+  )
+  await closeDlg()
+
+  await openOutlineDlg()
+  await page.clickByText('.dialog .row.small button', 'AI 推荐')
+  await sleep(220)
+  const chipTexts = await page.evaluate(
+    "return Array.from(document.querySelectorAll('.dialog .tchip')).map((b) => b.textContent.trim())"
+  )
+  check('AI 推荐：标签够多且分好组', chipTexts.length >= 40, `${chipTexts.length} 个`)
+  check('AI 推荐：有男频 / 女频', chipTexts.includes('男频') && chipTexts.includes('女频'))
+  check(
+    'AI 推荐：有字数档（0-50 / 50-100 / 100-150 / 150-200 / 200 以上）',
+    ['0-50万字', '50-100万字', '100-150万字', '150-200万字', '200万字以上'].every((t) => chipTexts.includes(t)),
+    chipTexts.join('、').slice(0, 120)
+  )
+  check('AI 推荐：题材标签比原来多（都市 / 系统流 / 同人 / 克苏鲁 都在）', ['都市', '系统流', '同人', '克苏鲁'].every((t) => chipTexts.includes(t)))
+
+  await page.clickByText('.dialog .tchip', '男频')
+  await page.clickByText('.dialog .tchip', '玄幻')
+  await page.evaluate(`
+    const inp = Array.from(document.querySelectorAll('.dialog input')).find((i) => (i.placeholder || '').includes('都市异能'))
+    inp.focus()
+    inp.value = '都市异能、克苏鲁'
+    inp.dispatchEvent(new Event('input', { bubbles: true }))
+    const ta = document.querySelector('.dialog .idea')
+    ta.focus()
+    ta.value = '主角是个失业的修表匠，金手指是能听见钟表的心跳'
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  `)
+  await sleep(240)
+  const seenTags = await page.evaluate("return document.querySelector('.dialog .seen-tags')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check(
+    'AI 推荐：点选 + 自定义标签都进了「AI 会看到」那一行（作者不用猜自己写的进没进去）',
+    // 自定义输入是「都市异能、克苏鲁」：克苏鲁原样保留，都市异能被最长匹配切成 都市 + 异能
+    ['男频', '玄幻', '都市', '异能', '克苏鲁'].every((t) => seenTags.includes(t)),
+    seenTags
+  )
+  check('AI 推荐：想法是单独一栏，可写散句', await page.evaluate("return !!document.querySelector('.dialog .idea')"))
+
+  // 中文分词：没打分隔符的一长串也要切得开（已知标签最长匹配兜底）
+  await page.evaluate(`
+    const inp = Array.from(document.querySelectorAll('.dialog input')).find((i) => (i.placeholder || '').includes('都市异能'))
+    inp.value = '女频甜宠'
+    inp.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  `)
+  await sleep(220)
+  const seenTags2 = await page.evaluate("return document.querySelector('.dialog .seen-tags')?.innerText.replace(/\\s+/g, ' ') || ''")
+  check('AI 推荐：没打分隔符也切得开（女频甜宠 → 女频 + 甜宠）', seenTags2.includes('女频') && seenTags2.includes('甜宠'), seenTags2)
+
+  await page.clickByText('.dialog .tchip', '100-150万字')
+  await sleep(220)
+  check(
+    'AI 推荐：点「100-150万字」顺带把章数定好（125 万 ÷ 每章 3000 ≈ 417 章）',
+    (await shapeVals()).split('/')[1] === '417',
+    await shapeVals()
+  )
+  check(
+    'AI 推荐：篇幅档的选中态是算出来的（跟着字数走，不另存一份状态）',
+    await page.evaluate(
+      `const b = Array.from(document.querySelectorAll('.dialog .tchip')).find((x) => x.textContent.trim() === '100-150万字'); return !!b && b.classList.contains('on')`
+    )
+  )
+  await shot(page, '35-outline-tags.png')
+  await closeDlg()
 
   /* ---------- 8. 报错汇总 ---------- */
   section('8. 控制台与网络')
