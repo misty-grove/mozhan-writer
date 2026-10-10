@@ -34,6 +34,11 @@ function run(label, args, opts = {}) {
   })
 }
 
+/** 跑一次构建并带上额外环境变量（不污染父进程的 env）。 */
+function runWithEnv(label, args, extraEnv) {
+  return run(label, args, { env: { ...process.env, ...extraEnv } })
+}
+
 async function waitServer(timeoutMs = 30000) {
   const t0 = Date.now()
   while (Date.now() - t0 < timeoutMs) {
@@ -53,7 +58,10 @@ let code = 1
 try {
   if (!process.env.E2E_SKIP_BUILD) {
     console.log('▶ 构建产物…')
-    await run('vite build', [viteBin, 'build'])
+    // 验收构建带上 `VITE_E2E=1`：`src/main.ts` 据此挂出 `window.__writerDev`，
+    // 让验收脚本能直接往模块级 reactive（如候选区）里塞数据，验真实交互。
+    // 正式出包（npm run build）不设这个变量，产物里就没有这段。
+    await runWithEnv('vite build', [viteBin, 'build'], { VITE_E2E: '1' })
   }
   console.log(`▶ 启动预览服务器 ${url}`)
   server = spawn(process.execPath, [viteBin, 'preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], {

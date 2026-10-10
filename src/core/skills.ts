@@ -26,6 +26,7 @@ export function parseSkillFile(raw: string, source: Skill['source'], location?: 
   return {
     id: `${source}:${name}`,
     name,
+    slug: meta.slug ? String(meta.slug).trim() : undefined,
     description: String(meta.description || ''),
     allowedTools: Array.isArray(meta['allowed-tools']) ? meta['allowed-tools'].map(String) : meta['allowed-tools'] ? [String(meta['allowed-tools'])] : [],
     source,
@@ -39,11 +40,12 @@ export function serializeSkill(s: Partial<Skill>): string {
   return serializeDoc(
     {
       name: s.name,
+      slug: s.slug,
       description: s.description,
       'allowed-tools': s.allowedTools || []
     },
     s.content || '',
-    ['name', 'description', 'allowed-tools']
+    ['name', 'slug', 'description', 'allowed-tools']
   )
 }
 

@@ -13,6 +13,38 @@ export interface AiConfig {
   temperature: number
   maxTokens: number
   contextWindow: number
+  /**
+   * AI 引擎。
+   *
+   * - `api`（默认）：直连 OpenAI 兼容接口，需要 Key；
+   * - `agent`：走本机 DSH，Key 由 DSH 自己管，Agent 会自己读作品文件、分多步做事；
+   * - `both`：优先 Agent，跑不起来（没装 / 没登录 / 报错）时回落直连 API。
+   *
+   * 这三档的存在意义是**降级**：不认识 DSH 的作者用 api 档，行为与升级前完全一致。
+   */
+  engine: 'api' | 'agent' | 'both'
+  /** dsh 可执行文件路径；留空则自动探测（PATH → 默认安装位置） */
+  agentCli: string
+  /** DSH profile，默认 headless */
+  agentProfile: string
+  /**
+   * Agent 权限档位。
+   *
+   * `read_only` 是默认：本应用的铁律是「AI 产出进候选区，作者点采纳才落盘」，
+   * 一个能自己写文件的 Agent 与这条冲突。
+   * `write_in_cwd` 才放开写 —— 只值得给「记忆整理」这类重复劳动开。
+   */
+  agentPermission: 'read_only' | 'write_in_cwd'
+  /** 单次 Agent 运行超时（秒）：长篇续写可能跑几分钟 */
+  agentTimeoutSecs: number
+  /**
+   * 每个作品绑定的 DSH 会话 id（`作品目录的稳定标识 → sessionId`）。
+   *
+   * 存这里而不是作品文件里：`作品信息.md` 是作者要读的东西，
+   * 塞一个 `session-5b9c…` 进去只会让人困惑；而会话本来就是「这台机器上的事」，
+   * 换台电脑重开一个会话反而是对的。
+   */
+  agentSessions: Record<string, string>
 }
 
 export interface EditorConfig {
@@ -77,7 +109,13 @@ const defaults: AppSettings = {
     model: '',
     temperature: 0.8,
     maxTokens: 4096,
-    contextWindow: 32000
+    contextWindow: 32000,
+    engine: 'api',
+    agentCli: '',
+    agentProfile: 'headless',
+    agentPermission: 'read_only',
+    agentTimeoutSecs: 600,
+    agentSessions: {}
   },
   editor: {
     fontFamily: '"Source Han Serif SC","Noto Serif CJK SC",SimSun,"Songti SC",Georgia,serif',
@@ -302,5 +340,20 @@ export function applyAppearance() {
 /** AI 是否可用：只有配置了 baseUrl + key + model 才解锁整个 AI 层 */
 export function aiEnabled(): boolean {
   const a = settings.ai
+  // Agent 档不需要 Key（DSH 自己管），但仍要求"作者确实开了 AI 层"——
+  // 否则一装 DSH 就凭空冒出 AI 入口，纯离线写作的作者会觉得被冒犯。
+  if (a.engine === 'agent' && a.configured) return true
   return a.configured && !!a.baseUrl.trim() && !!a.apiKey.trim() && !!a.model.trim()
+}
+
+/** 当前是否该走 Agent（真跑之前还要再问一次 agentAvailable） */
+export function agentPreferred(): boolean {
+  const e = settings.ai.engine
+  return (e === 'agent' || e === 'both') && settings.ai.configured
+}
+
+/** 直连 API 这条路还通不通（Key / URL / 模型齐不齐） */
+export function apiReady(): boolean {
+  const a = settings.ai
+  return !!a.baseUrl.trim() && !!a.apiKey.trim() && !!a.model.trim()
 }

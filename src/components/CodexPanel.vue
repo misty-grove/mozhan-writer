@@ -10,6 +10,10 @@ import { buildRefIndex, presenceStats, type RefHit } from '@/core/links'
 import type { SettingKind } from '@/core/types'
 import { addEntry, codexState, ensureCodex, removeEntry, refreshCodex, saveEntry } from '@/stores/codex'
 import { askConfirm } from '@/stores/dialog'
+import { aiEnabled } from '@/core/settings'
+import { generate } from '@/stores/ai'
+import { GEN_KIND_LABEL, condenseOutline, savedTags, settingGenPrompt, type SettingGenKind } from '@/core/worldbuild'
+import { setDockTab } from '@/stores/editor'
 import { ensureBodies, orderedChapters, state } from '@/stores/workspace'
 
 interface FieldRow {
@@ -32,6 +36,15 @@ const msg = ref('')
 
 const refs = ref<RefHit[]>([])
 const gap = ref<{ total: number; lastChapter: number | null; gapFromEnd: number } | null>(null)
+
+/* 大纲的状态必须在下面那个 watch 之前声明 —— 那个 watch 是 `immediate: true`，
+   在 setup 阶段就会同步调到 loadOutline()，而这些是 `const` ref。
+   声明在后面就是 TDZ：`ReferenceError: Cannot access 'genOutline' before initialization`，
+   整个面板白屏。这个项目在「绑到元素上」的初始化上栽过一次，这里是同一类坑。 */
+/** 大纲读进来一次就够：面板打开时读，作者改了再点「重读大纲」 */
+const genOutline = ref('')
+const genOutlineName = ref('')
+const genOutlineErr = ref('')
 
 const selected = computed(() => codexState.entries.find((e) => e.id === codexState.selectedId) || null)
 const dirty = computed(() => {
@@ -70,6 +83,8 @@ watch(
   () => state.ref,
   () => {
     ensureCodex(true)
+    // 换作品要重读大纲：上一部的大纲留着会把设定带偏（切换作品后状态残留是这个项目的老毛病）
+    loadOutline()
   },
   { immediate: true }
 )
@@ -134,6 +149,105 @@ async function onImportFolder() {
 function reloadInsight() {
   const e = selected.value
   if (e) loadInsight(e)
+}
+
+/* ------------------------------------------------------------------ AI 生成设定 */
+
+/** 可生成的类型与中文标签（与 core/worldbuild.ts 的 GEN_KIND_LABEL 对齐） */
+const GEN_KINDS: Array<{ k: SettingGenKind; label: string }> = [
+  { k: 'character', label: '人物' },
+  { k: 'location', label: '地点' },
+  { k: 'organization', label: '组织/势力' },
+  { k: 'item', label: '道具' },
+  { k: 'race', label: '种族/生物' },
+  { k: 'lore', label: '世界观规则' }
+]
+
+const genOpen = ref(false)
+const genBusy = ref(false)
+const genMsg = ref('')
+const genKinds = ref<SettingGenKind[]>(['character'])
+const genPer = ref(3)
+const genMaterial = ref('')
+
+/** 本次生成实际会带上的标签（作者上次在大纲面板点的那串，见 rememberTags） */
+const genTags = computed(() => savedTags())
+
+/**
+ * 读作品现有的大纲。
+ *
+ * 只读**不解析** —— 模型看得懂 Markdown，压成骨架反而丢信息。
+ * 落点有两个：软件自己写的 `大纲/大纲.md`，和作者手写的
+ * `剧情大纲.md` / `全书*.md`（导入大纲时落在这些名字上）。两个都试，
+ * 谁有内容用谁，这样「作者自己写的稿子」不会被空模板压过去。
+ */
+async function loadOutline() {
+  genOutline.value = ''
+  genOutlineName.value = ''
+  genOutlineErr.value = ''
+  if (!state.ref) return
+  /* 先扫目录、再按优先级试：作者手写的「剧情大纲 / 全书」排在软件生成的
+     「大纲.md」前面 —— 前者信息更多，且不会被新建作品时的空模板压过去。 */
+  let names: string[] = []
+  try {
+    names = (await fs().listDir(state.ref, ['大纲']))
+      .filter((e) => e.kind === 'file' && /\.(md|txt)$/i.test(e.name))
+      .map((e) => e.name)
+  } catch {
+    /* 还没有 大纲/ 目录 */
+  }
+  const rank = (n: string) => (n.includes('剧情大纲') || n.includes('全书') ? 0 : n === '大纲.md' ? 1 : 2)
+  const ordered = [...names].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+  for (const name of ordered) {
+    try {
+      const text = condenseOutline(await fs().readFile(state.ref, ['大纲', name]))
+      if (text.trim()) {
+        genOutline.value = text
+        genOutlineName.value = `大纲/${name}`
+        return
+      }
+    } catch {
+      /* 读不到就试下一个 */
+    }
+  }
+  genOutlineErr.value = '还没读到大纲 —— 先去「大纲」面板生成或导入，AI 才能让设定跟故事对上。'
+}
+
+/**
+ * 让 AI 生成设定。
+ *
+ * 输入综合三样：**大纲**（故事走向）+ **作品标签**（题材调性）+ 作者粘的材料。
+ * 产出**先落候选区**（和所有 AI 功能一条规矩）：候选那边能预览、能删，
+ * 作者确认后才点「写入设定库」。所以这里只负责拼提示词、发请求、说一句结果。
+ */
+async function onGenerate() {
+  if (!state.ref || !genKinds.value.length) return
+  genBusy.value = true
+  genMsg.value = '生成中…'
+  try {
+    const out = await generate({
+      mode: 'setting',
+      instruction: settingGenPrompt({
+        title: state.info.title || '',
+        brief: state.info.brief || '',
+        // 标签不落盘，是「大纲 → AI 推荐」那边记住的；作者没选过就是空串，
+        // 提示词里会退化成「按想法与材料自行判断」。
+        tags: genTags.value,
+        outline: genOutline.value,
+        material: genMaterial.value,
+        existing: codexState.entries.map((e) => e.name),
+        kinds: genKinds.value,
+        perKind: genPer.value
+      }),
+      n: 1
+    })
+    setDockTab('candidate')
+    genMsg.value = out.length ? '设定稿已进「候选」——看过再点采纳' : '没有生成候选'
+  } catch (e: any) {
+    genMsg.value = `生成失败：${e?.message || e}`
+  } finally {
+    genBusy.value = false
+  }
 }
 
 async function onCreate() {
@@ -204,6 +318,55 @@ function dropField(i: number) {
         <button class="text small" @click="refreshCodex()">刷新</button>
         <button class="text small" :disabled="busy" @click="onImportFolder">导入文件夹</button>
         <button class="text small" @click="creating = !creating">{{ creating ? '取消' : '+ 新建' }}</button>
+      </div>
+    </div>
+
+    <!-- AI 生成设定：只在配了 AI 时出现（纯离线作者不该看见点不通的按钮） -->
+    <div v-if="aiEnabled()" class="gen">
+      <div class="spread">
+        <button class="text small" @click="genOpen = !genOpen">
+          {{ genOpen ? '收起 AI 生成' : '✦ 让 AI 生成设定' }}
+        </button>
+        <span v-if="genMsg" class="small dim">{{ genMsg }}</span>
+      </div>
+      <div v-if="genOpen" class="gen-body">
+        <div class="row small wrap">
+          <label v-for="k in GEN_KINDS" :key="k.k" class="chip-in">
+            <input type="checkbox" :value="k.k" v-model="genKinds" />
+            {{ k.label }}
+          </label>
+        </div>
+        <div class="row small">
+          <span class="dim">每类</span>
+          <input v-model.number="genPer" type="number" min="1" max="12" style="width: 64px" />
+          <span class="dim">条</span>
+          <button class="primary small" :disabled="genBusy || !genKinds.length" @click="onGenerate">
+            {{ genBusy ? '生成中…' : '生成' }}
+          </button>
+        </div>
+
+        <!-- 把「AI 实际会看到的输入」摊开，作者不用猜 -->
+        <div class="seen small">
+          <div class="spread">
+            <span class="dim">大纲：</span>
+            <span class="row">
+              <b v-if="genOutlineName">{{ genOutlineName }} · {{ genOutline.length.toLocaleString() }} 字</b>
+              <span v-else class="dim">{{ genOutlineErr || '读取中…' }}</span>
+              <button class="text small" @click="loadOutline">重读</button>
+            </span>
+          </div>
+          <div class="spread">
+            <span class="dim">标签：</span>
+            <b v-if="genTags">{{ genTags }}</b>
+            <span v-else class="dim">没选过 —— 去「大纲 → AI 推荐」点几个，这里就有了</span>
+          </div>
+        </div>
+
+        <textarea
+          v-model="genMaterial"
+          rows="3"
+          placeholder="可选：再补一点世界观 / 已有设定（AI 当作事实来源，不会跟它矛盾）"
+        ></textarea>
       </div>
     </div>
 
@@ -306,6 +469,28 @@ function dropField(i: number) {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+.gen {
+  border: 1px solid var(--accent-soft);
+  border-radius: var(--radius);
+  padding: 8px;
+}
+.gen-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.seen {
+  border-top: 1px dashed var(--line-soft);
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.gen-body textarea {
+  min-height: 60px;
+  resize: vertical;
 }
 .list {
   max-height: 32vh;

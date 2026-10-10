@@ -6,6 +6,7 @@ import { countWords, fmtTime } from '@/core/util'
 import { settings, touchRecent } from '@/core/settings'
 import { addTodayWords, todayWords } from '@/core/workspace'
 import { resetNav } from '@/stores/editor'
+import { runWorkResetHooks } from '@/core/hooks'
 import { askConfirm } from '@/stores/dialog'
 import type { AssetDoc, Chapter, ChapterStatus, Volume, VolumeMeta, WorkInfo } from '@/core/types'
 
@@ -78,6 +79,9 @@ export async function openWork(ref: DirRef) {
     state.ref = ref
     // 换作品就别带着上一部的编辑位置历史了（导航历史是「作品内」的概念）
     resetNav()
+    // AI 层的候选卡 / 上下文条目也是「作品内」的概念：不清的话新作品里
+    // 还挂着上一部的续写候选，作者会以为"窗口删不掉"（见 core/hooks.ts）
+    runWorkResetHooks()
     await refresh(false)
     // 真实浏览器里暴露的问题：新作品一章都没有，而章节树默认是收起的，
     // 用户面对一片空白找不到建章的入口。没有章节时直接把树展开。
@@ -524,6 +528,7 @@ export function closeWork() {
   state.content = ''
   state.currentId = ''
   state.dirty = false
+  runWorkResetHooks()
 }
 
 /** 今日已写字数（响应式） */

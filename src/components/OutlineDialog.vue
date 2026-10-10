@@ -22,6 +22,7 @@ import {
   type Skeleton
 } from '@/core/outline'
 import { TAG_GROUPS, joinTags, lengthTagOf, parseTags, wordsOfTag, type TagGroup } from '@/core/tags'
+import { rememberTags } from '@/core/worldbuild'
 import { createVolume } from '@/core/workspace'
 import { newChapter, refresh, state } from '@/stores/workspace'
 import { aiEnabled } from '@/core/settings'
@@ -188,6 +189,11 @@ const settingNames = ref<string[]>([])
 const customTags = computed(() => parseTags(recCustom.value))
 const allTags = computed(() => joinTags([...recChips.value, ...customTags.value, lengthTag.value]))
 
+/* 标签本身不落盘，但「生成设定」要用它 —— 作者点一次标签，之后开设定面板
+   不该再点一遍。这里在标签变化时把最终那串存下来（界面显示的与存的是同一串，
+   避免「看到的」和「AI 收到的」不一致）。 */
+watch(allTags, (v) => rememberTags(v))
+
 function chipOn(t: string, g: TagGroup): boolean {
   return g.key === 'length' ? t === lengthTag.value : recChips.value.includes(t)
 }
@@ -256,6 +262,7 @@ async function askRecommend() {
       n: 1
     })
     setDockTab('candidate')
+    rememberTags(allTags.value)
     msg.value = out.length ? '推荐稿已进「候选」—— 看过、改过，再点「写入大纲文件」落盘' : '没有生成候选'
   } catch (e: any) {
     msg.value = `AI 生成失败：${e?.message || e}`

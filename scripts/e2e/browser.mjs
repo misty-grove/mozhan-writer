@@ -1866,6 +1866,201 @@ try {
   }
   check('五个弹窗都没有控件在削字 / 切字', badDlgs.length === 0, badDlgs.slice(0, 3).join(' | '))
 
+  /* ---------- 7.15 候选区能删、换作品不留残影 ----------
+     作者原话：「用 AI 续写后带有续写内容的窗口一直存在，不能删除内容以及窗口，
+     切换作品还存在」。根因有两条，得分开验：
+       ① 卡片上没有删除入口；
+       ② aiState 是模块级 reactive，openWork / closeWork 都不碰它。
+     这里不依赖真实 API：候选是内存里的数组，直接往里塞两张再验 UI 就行
+     （fabricate 候选比等一次真网络稳定得多，验的是"删得掉吗"不是"生成得对吗"）。
+     用 ?sandbox=1 起一个干净作品，免得依赖前面那些节留下的状态。 */
+  section('7.15 候选区删除与换作品清理')
+  {
+    await page.evaluate(`
+      localStorage.clear()
+      await new Promise((r) => { const q = indexedDB.deleteDatabase('writer-sandbox'); q.onsuccess = q.onerror = q.onblocked = () => r() })
+      return true
+    `)
+    await page.navigate(URL + '?sandbox=1', { waitMs: 1600 })
+
+    // 先把 AI 层打开（候选页签只在 AI 启用后才出现），再建一个沙盒作品。
+    //
+    // 用 `engine: 'agent'` 而不是 api 档：`apiKey` 在 localStorage 里是**异或混淆过**的
+    // （core/settings.ts 的 obfuscate），直接写明文 `'test'` 进去，读回来 deobfuscate
+    // 出来是空串 → apiEnabled 判定为 false，候选页签根本不出现。
+    // agent 档只要求 `configured: true`（DSH 自己管密钥），正好拿来验 UI。
+    await page.evaluate(`
+      const s = JSON.parse(localStorage.getItem('writer.settings.v1') || '{}')
+      s.ai = Object.assign({}, s.ai, { configured: true, engine: 'agent', agentProfile: 'headless' })
+      localStorage.setItem('writer.settings.v1', JSON.stringify(s))
+      return true
+    `)
+    await page.send('Page.reload', { ignoreCache: true })
+    await page.waitFor("document.querySelector('#app') && document.querySelector('#app').children.length > 0", {
+      timeout: 20000,
+      label: '重载出 AI 层'
+    })
+    await sleep(1200)
+
+    // 建一个沙盒作品，好让右侧面板有得挂
+    if (await page.evaluate("return !!document.querySelector('.degrade-box')")) {
+      await page.clickByText('.degrade-box button', '新建作品（沙盒）')
+      await page.waitFor("document.querySelector('.create-sbx')", { label: '沙盒新建表单' })
+      await page.evaluate("const i = document.querySelector('.create-sbx input'); i.focus(); i.select(); return true")
+      await page.typeText('候选区删除测试')
+      await page.clickByText('.create-sbx button', '创建并开始写')
+      await page.waitFor("document.querySelector('.bar')", { timeout: 15000, label: '进入写作界面' })
+    }
+
+    // 打开右侧面板
+    if (!(await page.evaluate("return !!document.querySelector('.dock')"))) {
+      await page.pressKey('j', { ctrl: true })
+      await sleep(600)
+    }
+    await page.waitFor("document.querySelector('.dock .tabs')", { timeout: 8000, label: '右侧面板页签' })
+
+    const hasCandTab = await page.evaluate(
+      "return Array.from(document.querySelectorAll('.dock .tabs button')).some((b) => /候选/.test(b.textContent))"
+    )
+    check('AI 层开启后候选页签出现', hasCandTab)
+
+    if (hasCandTab) {
+      await page.clickByText('.dock .tabs button', '候选')
+      await sleep(500)
+      const emptyText = await page.evaluate("return (document.querySelector('.cand') || {}).innerText || ''")
+      check('没有候选时给出去哪生成的指引（不是一片空白）', /还没有候选|去「上下文」/.test(emptyText), emptyText.slice(0, 40))
+
+      // 空态下不该有「清空」按钮 —— 没东西可清还摆个按钮，点了没反应更让人困惑
+      const clearOnEmpty = await page.evaluate(
+        "return Array.from(document.querySelectorAll('.cand button')).some((b) => b.textContent.trim() === '清空')"
+      )
+      check('候选为空时不显示「清空」按钮', !clearOnEmpty)
+
+      // 候选为空时也不该有删除按钮
+      const delOnEmpty = await page.evaluate(
+        "return Array.from(document.querySelectorAll('.cand button')).some((b) => b.textContent.trim() === '删除')"
+      )
+      check('候选为空时不显示删除按钮', !delOnEmpty)
+
+      /* 真塞两张候选进去，验「删得掉」这个行为本身。
+         候选是模块级 reactive 数组，没法从外面直接写 —— 但开发模式下模块是
+         挂在 `window.__writerDev` 上的（见 src/main.ts），拿它塞最稳。 */
+      const injected = await page.evaluate(`
+        const dev = window.__writerDev
+        if (!dev || !dev.aiState) return false
+        dev.aiState.candidates.length = 0
+        dev.aiState.candidates.push(
+          { id: 'c1', title: '续写 · Agent', text: '第一段候选内容，用来验证单张删除。', model: 'm', skill: '', createdAt: '2026-10-10 21:00:00', mode: 'continue', targetChapterId: '', tokens: 20 },
+          { id: 'c2', title: '纠错 · Agent', text: '第二段候选内容，用来验证清空。', model: 'm', skill: '', createdAt: '2026-10-10 21:01:00', mode: 'polish', targetChapterId: '', tokens: 18 }
+        )
+        return true
+      `)
+      if (injected) {
+        await sleep(400)
+        const cardCount = () => page.evaluate("return document.querySelectorAll('.cand .item, .cand .card').length")
+        check('两张候选都渲染出来了', (await cardCount()) >= 2, `现在 ${await cardCount()} 张`)
+
+        // 单张删除：点第一张的删除入口
+        const delBtn = await page.evaluate(
+          "const btns = Array.from(document.querySelectorAll('.cand button')).filter((b) => b.textContent.trim() === '删除'); return btns.length"
+        )
+        check('候选卡片上有删除入口', delBtn >= 1, `找到 ${delBtn} 个`)
+
+        if (delBtn >= 1) {
+          await page.evaluate(
+            "const b = Array.from(document.querySelectorAll('.cand button')).find((x) => x.textContent.trim() === '删除'); b.click(); return true"
+          )
+          await sleep(500)
+          // 删除要过确认弹窗（askConfirm，不是 window.confirm）
+          const dlg = await page.evaluate("return !!document.querySelector('.dlg, .dialog')")
+          if (dlg) {
+            await page.evaluate(
+              "const b = Array.from(document.querySelectorAll('.dlg button, .dialog button')).find((x) => /删除|确定|确认/.test(x.textContent)); if (b) b.click(); return true"
+            )
+            await sleep(500)
+          }
+          check('删一张后只剩一张', (await cardCount()) === 1, `现在 ${await cardCount()} 张`)
+        }
+
+        // 清空：点「清空」按钮 → 确认 → 回到空态
+        const clearBtn = await page.evaluate(
+          "const b = Array.from(document.querySelectorAll('.cand button')).find((x) => x.textContent.trim() === '清空'); if (b) { b.click(); return true } return false"
+        )
+        if (clearBtn) {
+          await sleep(500)
+          await page.evaluate(
+            "const b = Array.from(document.querySelectorAll('.dlg button, .dialog button')).find((x) => /清空|确定|确认|删除/.test(x.textContent)); if (b) b.click(); return true"
+          )
+          await sleep(500)
+          check('清空后候选区回到空态', (await cardCount()) === 0, `现在 ${await cardCount()} 张`)
+        } else {
+          check('候选区有「清空」入口', false, '没找到「清空」按钮')
+        }
+      } else {
+        note('    （拿不到 __writerDev，跳过「删得掉」的行为验证；源码闸门在 selfcheck §52）')
+      }
+    }
+  }
+
+  /* ---------- 7.16 AI 生成设定：界面要摊开「AI 实际会看到什么」 ----------
+     作者的要求是「AI 推荐世界观和人物设定，**综合大纲和作品标签**」。
+     功能本身要发网络请求，这里不验「生成得对不对」（那靠 selfcheck 的提示词断言），
+     只验**界面有没有如实把输入摊开** —— 这个项目栽过的坑就是「界面上说带上了、
+     实际传了个空串」，所以必须让作者能自己看见大纲文件名、字数和标签串。 */
+  section('7.16 AI 生成设定面板把输入摊开')
+  {
+    // 接着 7.15 的沙盒作品用（此时已开 AI 层、有作品、有右侧面板）
+    const hasDock = await page.evaluate("return !!document.querySelector('.dock')")
+    if (!hasDock) {
+      await page.pressKey('j', { ctrl: true })
+      await sleep(600)
+    }
+    const ok = await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.dock .tabs button')).find((x) => /设定/.test(x.textContent))
+      if (!b) return false
+      b.click()
+      return true
+    `)
+    if (!ok) {
+      note('    （没找到「设定」页签，跳过本节）')
+    } else {
+      await sleep(700)
+      const entry = await page.evaluate(`
+        const b = Array.from(document.querySelectorAll('.codex button')).find((x) => /让 AI 生成设定/.test(x.textContent))
+        if (!b) return false
+        b.click()
+        return true
+      `)
+      check('设定面板有「让 AI 生成设定」入口', entry)
+
+      if (entry) {
+        // loadOutline 是异步的（要 listDir + readFile），「读取中…」是它的第一帧状态。
+        // 等它落到终态再断言，不然测的是「还没读完」那一瞬间。
+        await page.waitFor(
+          "(() => { const s = document.querySelector('.codex .seen'); if (!s) return false; return !/读取中/.test(s.innerText) })()",
+          { timeout: 8000, label: '大纲读取完成' }
+        ).catch(() => note('    （大纲状态停在「读取中…」超过 8s）'))
+        const seen = await page.evaluate("return (document.querySelector('.codex .seen') || {}).innerText || ''")
+        // innerText 在 flex 行里不一定吐换行，所以按「标签」二字切一刀取后半段
+        const flat = seen.replace(/\s+/g, ' ')
+        check('摊开了输入来源（大纲 / 标签两行都在）', /大纲/.test(flat) && /标签/.test(flat), flat.slice(0, 70))
+
+        /* 这个沙盒作品建出来时带的是**空大纲模板**（新建作品会写 大纲/大纲.md），
+           所以正常结果是「读到 大纲/大纲.md」。要是文件确实没有，报「还没读到大纲」
+           也算如实 —— 不能接受的是停在「读取中…」。 */
+        const outlineSeg = flat.split('标签')[0] || ''
+        const honest = /大纲\/|还没读到大纲/.test(outlineSeg) && !/读取中/.test(outlineSeg)
+        check('大纲那一行给出了实情（文件名，或明说没读到）', honest, outlineSeg.slice(0, 80))
+
+        // 标签：这次没在大纲面板点过，就该明说「没选过」并指路，而不是默默留空
+        const tagSeg = flat.split('标签')[1] || ''
+        check('没选过标签时明说 + 指路（不是默默留空）', /没选过/.test(tagSeg) && /AI 推荐/.test(tagSeg), tagSeg.slice(0, 80))
+
+        await shot(page, '08b-settings-ai.png')
+      }
+    }
+  }
+
   /* ---------- 8. 报错汇总 ---------- */
   section('8. 控制台与网络')
   const realErrors = page.consoleErrors.filter((e) => !/favicon/i.test(e))

@@ -115,6 +115,18 @@ export interface AssetDoc {
 export interface Skill {
   id: string
   name: string
+  /**
+   * 面向外部 Agent（DSH）的技能标识：**必须是 ASCII slug**。
+   *
+   * 为什么要单独一个字段：本应用界面上用的是中文名（`一致性检查`），
+   * 但 DSH 的 skill 工具只认 `[a-z0-9-]` 这类 ASCII 名 —— 传中文名会直接报
+   * `invalid skill name`（本机 dsh 0.2.0-rc.2 实测）。
+   * 所以投递技能到 `~/.dsh/skills/` 时用 slug 当目录名与 frontmatter name，
+   * 中文名只留在本应用的界面与提示词里。
+   * 没有 slug 的技能（作者手写的）投递时按中文名兜底 transliterate/哈希，
+   * 见 `core/agentSkills.ts`。
+   */
+  slug?: string
   description: string
   allowedTools: string[]
   source: 'builtin' | 'work' | 'global'
@@ -142,7 +154,7 @@ export interface Candidate {
   model: string
   skill?: string
   createdAt: string
-  mode: 'continue' | 'rewrite' | 'expand' | 'shrink' | 'tone' | 'summary' | 'outline' | 'generate' | 'fix'
+  mode: 'continue' | 'rewrite' | 'expand' | 'shrink' | 'tone' | 'summary' | 'outline' | 'generate' | 'fix' | 'setting'
   targetChapterId?: string
   applied?: boolean
   tokens?: number

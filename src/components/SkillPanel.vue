@@ -5,6 +5,7 @@ import { aiState, enabled, loadSkills } from '@/stores/ai'
 import * as sk from '@/core/skills'
 import { settings } from '@/core/settings'
 import { download } from '@/core/exportDoc'
+import { agentSkillsDir } from '@/platform/aiBridge'
 import { state } from '@/stores/workspace'
 import { askConfirm } from '@/stores/dialog'
 import type { Skill } from '@/core/types'
@@ -33,6 +34,38 @@ async function pickLibrary() {
   if (!d) return
   settings.skillLibrary = { id: d.id, name: d.name }
   await loadSkills()
+}
+
+/**
+ * 一键接入本机 DSH 的技能库（`~/.dsh/skills`）。
+ *
+ * 为什么值得一个按钮：DSH 那边装了 50 来个技能，其中十多个跟小说写作直接相关
+ * （`continuation` 断点续写、`long-memory` 记忆维护、`style-imitation` 文风仿写…）。
+ * 这些技能就是纯文本提示词，读进来不联网、不花钱，接上就能喂给应用自己的 API 引擎。
+ * 原来的路是「先自己知道 ~/.dsh/skills 在哪，再逐个点选文件夹」—— 对一个
+ * 只想写小说的作者来说门槛太高了。
+ */
+const dshBusy = ref(false)
+async function useDshLibrary() {
+  dshBusy.value = true
+  try {
+    const r = await agentSkillsDir()
+    if (!r.found || !r.path) {
+      notice.value = r.path
+        ? `没找到 DSH 技能库（${r.path} 不存在）—— 装过 DSH 再用这个入口`
+        : '没找到 DSH 技能库（需要桌面端，且本机装过 DSH）'
+      return
+    }
+    // 直接用绝对路径当 DirRef id：桌面端 DirRef.id 本身就是路径（同 Agent 的 cwd）
+    settings.skillLibrary = { id: r.path, name: r.path.split(/[\\/]/).pop() || 'skills' }
+    await loadSkills()
+    const n = aiState.skills.length
+    notice.value = `已接入 DSH 技能库（发现 ${r.count} 个技能，合并后共 ${n} 个）`
+  } catch (e: any) {
+    notice.value = `接入失败：${e?.message || e}`
+  } finally {
+    dshBusy.value = false
+  }
 }
 
 async function importFolder() {
@@ -86,6 +119,7 @@ function newSkill() {
   editing.value = {
     id: 'tmp',
     name: '',
+    slug: '',
     description: '',
     allowedTools: [],
     source: 'work',
@@ -147,12 +181,24 @@ const sample = computed(() => (!editing.value ? '' : ''))
         <input type="file" accept=".zip,.md,.markdown,.txt" multiple style="display: none" @change="importFiles" />
       </label>
     </div>
+    <div v-if="!mobile" class="row small">
+      <button class="text small" :disabled="dshBusy" @click="useDshLibrary">
+        {{ dshBusy ? '查找中…' : '一键接入 DSH 技能库' }}
+      </button>
+      <span class="dim">把本机 DSH 装的写作技能直接读进来，不用手动找目录</span>
+    </div>
     <div v-if="settings.skillLibrary" class="small dim">全局技能库：{{ settings.skillLibrary.name }}</div>
     <div v-if="notice" class="small dim">{{ notice }}</div>
 
     <div v-if="editing" class="panel edit">
       <div class="row">
         <input v-model="editing.name" placeholder="技能名（唯一标识）" />
+      </div>
+      <div class="row">
+        <input
+          v-model="editing.slug"
+          placeholder="英文标识 slug（可留空，自动生成）—— 外部 Agent 用它认这个技能"
+        />
       </div>
       <textarea v-model="editing.description" rows="2" placeholder="description：决定 AI 何时自动加载它，写清楚触发场景"></textarea>
       <textarea v-model="editing.content" rows="16" placeholder="技能正文：流程 / 规范 / 输出格式"></textarea>
@@ -170,6 +216,7 @@ const sample = computed(() => (!editing.value ? '' : ''))
             <input type="checkbox" :checked="s.enabled" style="width: auto" @change="toggle(s, ($event.target as any).checked)" />
             <b class="nm">{{ s.name }}</b>
             <span class="tag small">{{ s.source === 'builtin' ? '内置' : s.source === 'work' ? '作品内' : '全局' }}</span>
+            <span v-if="s.slug" class="tag small mono" :title="`给外部 Agent（DSH）用的英文标识：投递时目录名是 mozhan-${s.slug}-*`">{{ s.slug }}</span>
           </div>
           <div class="row">
             <button v-if="s.source === 'work'" class="text small" @click="editing = { ...s }">编辑</button>

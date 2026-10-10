@@ -1,5 +1,6 @@
 ---
 name: 一致性检查
+slug: consistency-check
 description: 当需要对某一章与前文/设定库做机械对账、查找矛盾时使用。只做机械核对，不做文学评价。
 allowed-tools: read_chapter, read_setting, read_memory, search_text
 ---

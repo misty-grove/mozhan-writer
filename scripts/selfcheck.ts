@@ -62,6 +62,7 @@ import type { Chapter, ChapterStatus, Volume } from '@/core/types'
 import { readFileSync, readdirSync } from 'node:fs'
 import { installMemoryFs } from './memfs'
 import { buildScaleWork } from './corpus'
+import { condenseOutline, parseSettingSheet, sanitizeName, settingGenPrompt } from '@/core/worldbuild'
 
 /**
  * 读工程内的源文件（静态断言用）。
@@ -197,7 +198,14 @@ async function main() {
 
   /* 10. 技能 */
   const skills = builtinSkills()
-  check('内置技能 5 个', skills.length === 5, skills.map((s) => s.name).join(','))
+  // 别写死数量：写死了每加一个技能都要回来改这里，而且改的时候很容易顺手把
+  // 「技能没被识别」也一起改成绿的。查「该在的都在」比查「正好 N 个」有意义。
+  const wantBuiltin = ['续写工作流', '记忆整理', '一致性检查', '大纲拆分', '文风仿写', '目录对照表']
+  check(
+    '内置技能齐全（含目录对照表：DSH 那类 Agent 靠它认 大纲/设定/正文/记忆 这套结构）',
+    wantBuiltin.every((n) => skills.some((s) => s.name === n)),
+    skills.map((s) => s.name).join(',')
+  )
   check('内置技能含续写工作流', skills.some((s) => s.name === '续写工作流'))
   const parsed = parseSkillFile('---\nname: 自定义\ndescription: 干点别的\nallowed-tools: [read_chapter]\n---\n正文', 'work')
   check('技能 SKILL.md 解析', parsed.name === '自定义' && parsed.allowedTools[0] === 'read_chapter' && parsed.content === '正文')
@@ -1976,6 +1984,564 @@ async function main() {
       '导入稿件：正文/ 与 全稿.txt 这类代码片段不许在中间断行（断了右半边像多出一个怪符号）',
       /code \{[\s\S]{0,200}?white-space: nowrap/.test(imp)
     )
+  }
+
+  /* 52. 候选区必须能删、换作品必须清（2026-10-10 作者报「续写窗口一直存在，删不掉」）
+     两件事一起钉，因为它们是一起暴露的：
+       ① 候选卡片上没有任何删除入口 —— 生成完只能一直挂着；
+       ② `aiState` 是模块级 reactive，`openWork` / `closeWork` 都不碰它 ——
+          换作品后上一部的候选还留在面板里，看着像"删不掉的窗口"。
+     只补 ① 不补 ②，跨作品残留照样在；只补 ② 不补 ①，单张卡还是清不掉。 */
+  {
+    const cand = readSrc('src/components/CandidatePanel.vue')
+    const ai = readSrc('src/stores/ai.ts')
+    const wsp = readSrc('src/stores/workspace.ts')
+    const hooks = readSrc('src/core/hooks.ts')
+
+    check(
+      '候选区：每张卡都有删除按钮（作者报过"删不掉"，只有清空是不够的）',
+      /function removeOne\s*\(/.test(cand) && /@click="removeOne\(c\)"/.test(cand) && /removeCandidate\(c\.id\)/.test(cand)
+    )
+    check('候选区：顶部有「清空」（一次全清，不用逐张点）', /function clearAll\s*\(/.test(cand) && /@click="clearAll"/.test(cand))
+    check(
+      '候选区：删除走 askConfirm，不许用 window.confirm（桌面壳会禁掉原生弹窗）',
+      /askConfirm\(/.test(cand) && !/window\.confirm/.test(cand)
+    )
+    check(
+      '候选区：已采纳的卡删除时额外确认一次（候选只在内存里，删了不可撤销）',
+      /c\.applied[\s\S]{0,300}?askConfirm/.test(cand)
+    )
+
+    check(
+      '换作品要清 AI 层：workspace 的 openWork 与 closeWork 都得通知',
+      /runWorkResetHooks\(\)/.test(wsp) && (wsp.match(/runWorkResetHooks\(\)/g) || []).length >= 2
+    )
+    check(
+      '换作品要清 AI 层：清理项包含候选区（不然"删不掉的窗口"跨作品复现）',
+      /export function resetForWork/.test(ai) && /aiState\.candidates = \[\]/.test(ai)
+    )
+    check(
+      '换作品要清 AI 层：正在生成的请求也要中止（不然旧作品的字会流进新作品的面板）',
+      /resetForWork[\s\S]{0,400}?abort\?\.abort\(\)/.test(ai)
+    )
+    // 环：ai.ts 已经 import 了 workspace.ts，反过来再 import 就是 stores 层成环。
+    // ESM 容得下环，但环上的初始化顺序不确定 —— 表现是「有时能用，改个 import 顺序就炸」。
+    check('⚠ 依赖方向：workspace.ts 不许反过来 import stores/ai（会成环）', !/from '@\/stores\/ai'/.test(wsp))
+    check('⚠ 依赖方向：换作品钩子走 core/hooks.ts（两侧都只依赖 core）', /export function runWorkResetHooks/.test(hooks) && /export function onWorkReset/.test(hooks))
+    check('⚠ 依赖方向：ai.ts 通过 onWorkReset 登记，不直接调 workspace', /onWorkReset\(resetForWork\)/.test(ai))
+    check(
+      '换作品钩子：单个回调抛异常不能连累其它（否则一个 store 出错就把换作品整个卡住）',
+      /for \(const fn of hooks[\s\S]{0,200}?try \{[\s\S]{0,120}?catch/.test(hooks)
+    )
+  }
+
+  /* 53. DSH Agent 事件流解析（2026-10-10 对接 L2）
+     下面每一条 JSON **都是 2026-10-10 实测 `dsh --profile headless --json` 抓下来的原样行**
+     （dsh 0.2.0-rc.2，本机）。用真实输出当夹具，而不是自己编一份「应该长这样」的 ——
+     自己编的夹具只能证明代码和它自己的想象一致。
+     改动这个解析器前，请先重跑那条命令核对字段。 */
+  {
+    const agent = await import('@/core/agent')
+
+    // —— 真实事件行 ——
+    const L_SESSION = '{"type":"session","sessionId":"session-5b9c4a02-73fc-4147-89d9-73d23c34d54d","cwd":"E:\\\\x"}'
+    const L_THINK = '{"type":"thinking","text":"Simple task: read the file 一句话.txt in current directory."}'
+    const L_CALL = '{"type":"tool_call","callId":"call_00_8aM4p0qz5yu7nUj4H0U83611","tool":"read","input":{"file_path":"E:\\\\Worksplace\\\\agentprobe\\\\一句话.txt"}}'
+    const L_RESULT = '{"type":"tool_result","callId":"call_00_8aM4p0qz5yu7nUj4H0U83611","status":"completed","result":"<path>…</path>"}'
+    const L_TEXT = '{"type":"text","text":"`一句话.txt` 里只有两个字：「测试」。"}'
+    const L_FINAL = '{"type":"final","text":"`一句话.txt` 里只有两个字：「测试」——内容就是一次测试。"}'
+    const L_STATUS = '{"type":"status","phase":"turn_end","turn":1,"reason":{"kind":"completed"}}'
+
+    const evSession = agent.parseAgentLine(L_SESSION)
+    check('Agent 事件：session 行能取到会话 id（续接全靠它）', evSession?.kind === 'session' && evSession.sessionId === 'session-5b9c4a02-73fc-4147-89d9-73d23c34d54d', evSession?.sessionId)
+
+    const evCall = agent.parseAgentLine(L_CALL)
+    check(
+      'Agent 事件：tool_call 能认出来，并把文件路径变成人话摘要',
+      evCall?.kind === 'tool_call' && evCall.call?.tool === 'read' && /读取/.test(evCall.label) && /一句话\.txt/.test(evCall.label),
+      evCall?.label
+    )
+    check(
+      'Agent 事件：路径只留末两段（整条绝对路径会把「过程」列表挤爆）',
+      !/[A-Za-z]:\\/.test(evCall?.label || ''),
+      evCall?.label
+    )
+    check(
+      'Agent 事件：tool_result 的 status=completed 判成成功',
+      agent.parseAgentLine(L_RESULT)?.ok === true,
+      String(agent.parseAgentLine(L_RESULT)?.ok)
+    )
+    check('Agent 事件：tool_result 的失败状态要报出来（不能静默当成成功）', agent.parseAgentLine('{"type":"tool_result","callId":"x","status":"failed"}')?.ok === false)
+    check('Agent 事件：text 行取到正文', agent.parseAgentLine(L_TEXT)?.text?.includes('测试') === true)
+    check('Agent 事件：final 行取到全文', agent.parseAgentLine(L_FINAL)?.text?.startsWith('`一句话.txt`') === true)
+    check('Agent 事件：turn_end 收尾判成「完成」', agent.parseAgentLine(L_STATUS)?.label === '完成', agent.parseAgentLine(L_STATUS)?.label)
+    check(
+      'Agent 事件：不认识的 type 归到 unknown 但**不丢行**（丢的往往正是出问题那行）',
+      agent.parseAgentLine('{"type":"future_thing","x":1}')?.kind === 'unknown' &&
+        agent.parseAgentLine('{"type":"future_thing","x":1}')?.raw?.includes('future_thing') === true
+    )
+    check(
+      'Agent 事件：非 JSON 噪声也要留着（cmd.exe 会把提示符混进 stdout）',
+      agent.parseAgentLine('not json at all')?.kind === 'unknown'
+    )
+    check('Agent 事件：空行返回 null（不是造一条空事件出来）', agent.parseAgentLine('   ') === null)
+    check(
+      'Agent 事件：step_start/step_end 不占「过程」列表（每次工具调用都是一对，全显示会淹掉真信息）',
+      agent.parseAgentLine('{"type":"status","phase":"step_start","turn":1,"step":1}')?.label === ''
+    )
+
+    // —— 增量累积 ——
+    const st = new agent.AgentStream()
+    st.push(L_SESSION)
+    st.push(L_CALL)
+    st.push(L_TEXT)
+    st.push(L_FINAL)
+    check('Agent 累积：会话 id 被留下', st.sessionId.startsWith('session-'), st.sessionId)
+    check('Agent 累积：最终文本以 final 为准（不是把后面几段拼起来）', st.result().startsWith('`一句话.txt` 里只有两个字'), st.result().slice(0, 30))
+    check('Agent 累积：工具调用计数为 1', st.toolCount === 1, String(st.toolCount))
+    check('Agent 累积：「过程」列表里有工具调用那一行', st.steps.some((s) => s.kind === 'tool_call' && /读取/.test(s.label)))
+
+    // DSH 的 text 事件实测是「一整段」，但两种行为都要能对。写死一种，
+    // DSH 换输出策略就会看到重复两遍或只剩最后一段。
+    const grow = new agent.AgentStream()
+    grow.push('{"type":"text","text":"第一段。"}')
+    grow.push('{"type":"text","text":"第一段。第二段。"}')
+    check('Agent 累积：新段落包含旧内容时按**替换**处理（不许拼成两遍）', grow.text === '第一段。第二段。', grow.text)
+    const app2 = new agent.AgentStream()
+    app2.push('{"type":"text","text":"第一段。"}')
+    app2.push('{"type":"text","text":"第二段。"}')
+    check('Agent 累积：完全不相干的两段按**追加**处理', app2.text === '第一段。第二段。', app2.text)
+    const dup = new agent.AgentStream()
+    dup.push('{"type":"text","text":"已经说过了"}')
+    dup.push('{"type":"text","text":"已经说过了"}')
+    check('Agent 累积：尾巴重复的输出被忽略（不显示两遍）', dup.text === '已经说过了', dup.text)
+  }
+
+  /* 54. Agent 后端的接线（源码闸门）
+     这一节钉的是「有没有接错槽」——真能跑起来是桌面验收的事（要装 DSH），
+     但槽位接错（参数名、feature 门控、权限档位默认值）在这里就能抓住。 */
+  {
+    const rs = readSrc('src-tauri/src/commands/agent.rs')
+    const mod = readSrc('src-tauri/src/commands/mod.rs')
+    const lib = readSrc('src-tauri/src/lib.rs')
+    const bridge = readSrc('src/platform/aiBridge.ts')
+    const aiStore = readSrc('src/stores/ai.ts')
+    const settingsSrc = readSrc('src/core/settings.ts')
+
+    check('Agent：Rust 模块挂 net feature（与 ai.rs 同门控）', /#\[cfg\(feature = "net"\)\]\s*pub mod agent;/.test(mod))
+    check(
+      'Agent：三条命令都注册进 generate_handler 且带 net 门控',
+      ['agent_probe', 'agent_run', 'agent_cancel'].every((c) => new RegExp(`#\\[cfg\\(feature = "net"\\)\\]\\s*commands::agent::${c}`).test(lib)),
+      ''
+    )
+    check(
+      '⚠ Agent：task 必须走 Command::arg，绝不拼进命令行（拼串 = 命令注入）',
+      /cmd\.arg\(&task\)/.test(rs) && !/format!\([^)]*\.arg\(/.test(rs) && !/Command::new\([^)]*\)\.arg\(&format!/.test(rs)
+    )
+    check(
+      '⚠ Agent：Windows 上 .cmd 借 shell 执行时，路径也走 arg 而不是拼串',
+      /c\.arg\("\/C"\)\.arg\(cli\)/.test(rs)
+    )
+    check('⚠ Agent：子进程带 CREATE_NO_WINDOW（桌面端不该闪黑框）', /CREATE_NO_WINDOW/.test(rs) && /creation_flags/.test(rs))
+    check('Agent：同一时刻只允许一个 run（多个 Agent 同时改一个作品会互相看不见）', /if !m\.is_empty\(\)/.test(rs))
+    check('Agent：默认只读档位', /fn\s+read_only|permission\.as_deref\(\) != Some\("write_in_cwd"\)/.test(rs) && /agentPermission: 'read_only'/.test(settingsSrc))
+    check('Agent：只读提示词明写禁止写文件', /禁止\*\*创建、修改、删除任何文件/.test(rs))
+    check('Agent：cwd 固定为作品目录', /current_dir\(&cwd\)/.test(rs) && /async function fsAdapterRoot/.test(aiStore) && /cwd: id,/.test(aiStore))
+    check('Agent：带超时（长篇续写会跑很久，但不能永远挂着）', /timeout_secs/.test(rs) && /elapsed\(\) > timeout/.test(rs))
+
+    check('Agent 桥：只在桌面端可用（浏览器/手机直接拒）', /export async function agentAvailable/.test(bridge) && /isMobile/.test(bridge))
+    check(
+      'Agent 桥：取消令牌由前端生成（Rust 的 run_id 要等返回才知道，那时已经跑完了）',
+      /cancelToken: string/.test(bridge) && /cancel_token: String/.test(rs) && /const token = uid\('agentrun'\)/.test(aiStore)
+    )
+    check(
+      'Agent 引擎：both 档 Agent 失败要回落直连 API（别让作者两头空）',
+      /settings\.ai\.engine === 'both' && apiReady\(\)/.test(aiStore) && /return null/.test(aiStore)
+    )
+    check('Agent 引擎：会话按作品绑定（换作品换会话，前后文不互串）', /agentSessions/.test(settingsSrc) && /function sessionKey/.test(aiStore))
+    check('Agent 引擎：aiEnabled 在 agent 档不要求 Key（DSH 自己管密钥）', /a\.engine === 'agent' && a\.configured/.test(settingsSrc))
+  }
+
+  /* 55. Agent 技能投递 + 权限模式（2026-10-10 实跑 DSH 得出的硬约束）
+
+     这一节钉的是「DSH 那边到底认什么」——三条全是实测出来的，不是猜的：
+     1) 技能名必须是 ASCII slug，中文名报 invalid skill name；
+     2) 技能只从 ~/.dsh/skills/<slug>/SKILL.md 登记（customSkillDirs 运行时不被扫描）；
+     3) 沙箱在 Windows 上跑不起来，必须显式给 DSH_PERMISSION_MODE=danger-full-access。
+     这三条错了，Agent 要么看不见技能、要么干脆一条命令都跑不动。 */
+  {
+    const rs = readSrc('src-tauri/src/commands/agent.rs')
+    const lib = readSrc('src-tauri/src/lib.rs')
+    const bridge = readSrc('src/platform/aiBridge.ts')
+    const aiStore = readSrc('src/stores/ai.ts')
+    const agSkills = readSrc('src/core/agentSkills.ts')
+    const skillSrc = readSrc('src/core/skills.ts')
+    const typesSrc = readSrc('src/core/types.ts')
+
+    // —— 权限模式 ——
+    check(
+      '⚠ Agent：显式给 DSH_PERMISSION_MODE（默认 workspace-write 在本机 grantWrite 就挂，什么都跑不起来）',
+      /cmd\.env\("DSH_PERMISSION_MODE",\s*"danger-full-access"\)/.test(rs)
+    )
+    check(
+      'Agent：权限模式的选择原因写在源码注释里（下次别再退回默认档）',
+      /SetNamedSecurityInfoW failed/.test(rs) && /workspace-write/.test(rs)
+    )
+
+    // —— 技能投递 ——
+    check(
+      'Agent 技能：写进 ~/.dsh/skills（DSH 只从这里登记技能）',
+      /fn dsh_skills_dir/.test(rs) && /\.join\("\.dsh"\)\.join\("skills"\)/.test(rs)
+    )
+    check(
+      '⚠ Agent 技能：只碰 mozhan- 命名空间（家目录里还有作者自己的技能，不能覆盖/误删）',
+      /const SKILL_NS: &str = "mozhan-"/.test(rs) && /starts_with\(SKILL_NS\)/.test(rs)
+    )
+    check(
+      'Agent 技能：幂等（内容没变不重写 —— DSH 有文件监听，反复写会触发无谓重载）',
+      /if old == f\.content/.test(rs)
+    )
+    check(
+      'Agent 技能：清理只删本命名空间内、且这次没再投递的（技能被删/改名时不留垃圾）',
+      /want\.contains\(&name\)/.test(rs) && /remove_dir_all/.test(rs) && /p\.join\("SKILL\.md"\)\.is_file\(\)/.test(rs)
+    )
+    check(
+      'Agent 技能：sync 命令注册进 generate_handler 且带 net 门控',
+      /#\[cfg\(feature = "net"\)\]\s*commands::agent::agent_sync_skills/.test(lib)
+    )
+    check(
+      'Agent 技能：桥接函数只在桌面端可用',
+      /export async function agentSyncSkills/.test(bridge) && /agentAvailable\(\)/.test(bridge)
+    )
+    check(
+      'Agent 技能：跑 Agent 前先投递（否则 DSH 拿自己的 project-layout 把 大纲/ 判成不合规范）',
+      /await syncSkillsToAgent\(\)/.test(aiStore) && /async function syncSkillsToAgent/.test(aiStore)
+    )
+    check(
+      'Agent 技能：投递失败不阻断任务（技能是加分项，不是必需项）',
+      /async function syncSkillsToAgent[\s\S]*?try \{[\s\S]*?\} catch/.test(aiStore) && /技能是加分项/.test(aiStore)
+    )
+    check(
+      'Agent 技能：只投递启用的技能（关掉的开关不该在 DSH 那边还生效）',
+      /if \(!s\.enabled\) continue/.test(agSkills)
+    )
+
+    // —— ASCII slug 约束 ——
+    check(
+      '⚠ Agent 技能：目录名是 ASCII slug（中文名 DSH 直接报 invalid skill name）',
+      /export function toSlug/.test(agSkills) && /replace\(\/\[\^a-z0-9\]\+\/g, '-'\)/.test(agSkills)
+    )
+    check(
+      'Agent 技能：slug 带稳定 hash 后缀（中文名 ASCII 化后可能撞车，撞了会互相覆盖）',
+      /export function shortHash/.test(agSkills) && /export function skillDirName/.test(agSkills) && /shortHash\(s\.name\)/.test(agSkills)
+    )
+    check(
+      'Agent 技能：投递时 frontmatter 的 name 换成 slug（作者的中文名只留在本应用界面）',
+      /export function renderForDsh/.test(agSkills) && /name: \$\{dir\}/.test(agSkills)
+    )
+    check(
+      'Agent 技能：Skill 类型有独立的 slug 字段（中文名继续当界面主键）',
+      /slug\?: string/.test(typesSrc) && /slug: meta\.slug/.test(skillSrc)
+    )
+    check(
+      'Agent 技能：slug 进 serializeSkill，往返不丢（编辑技能后再投递仍在）',
+      /slug: s\.slug/.test(skillSrc) && /'name', 'slug', 'description', 'allowed-tools'/.test(skillSrc)
+    )
+    check(
+      'Agent 技能：任务提示词点名布局技能（不点名 DSH 会猜名字，白烧一轮往返）',
+      /export function layoutGuide/.test(agSkills) && /layoutGuide\(\)/.test(aiStore) && /先用 skill 工具加载/.test(agSkills)
+    )
+    check(
+      'Agent 技能：提示词明写「不要新建 spec/，不要把现有结构判成不合规范」',
+      /不要\*\*新建 spec\//.test(agSkills) && /不合规范/.test(agSkills)
+    )
+    check(
+      'Agent 技能：布局技能按 slug 认（中文名作者能改，slug 是我们自己定的标识）',
+      /BUILTIN_LAYOUT_SKILL_SLUG = 'work-layout-map'/.test(agSkills)
+    )
+    check(
+      'Agent 技能：设置页说明 Windows 沙箱已关闭、约束是软约束（别让作者误以为有系统级隔离）',
+      /关掉它的沙箱再启动 Agent/.test(readSrc('src/components/SettingsDialog.vue'))
+    )
+
+    // 六个内置技能的 slug 齐全且互不相同
+    const slugs: string[] = []
+    for (const dir of ['一致性检查', '大纲拆分', '文风仿写', '目录对照表', '续写工作流', '记忆整理']) {
+      const raw = readSrc(`src/skills/${dir}/SKILL.md`)
+      const m = raw.match(/^slug:\s*([a-z0-9-]+)\s*$/m)
+      if (m) slugs.push(m[1])
+    }
+    check(`Agent 技能：六个内置技能都写了 ASCII slug（找到 ${slugs.length}/6）`, slugs.length === 6)
+    check('Agent 技能：内置技能的 slug 互不相同', new Set(slugs).size === slugs.length)
+    check(
+      'Agent 技能：slug 全是纯 ASCII（[a-z0-9-]，这是 DSH 的硬约束）',
+      slugs.length > 0 && slugs.every((s) => /^[a-z0-9-]+$/.test(s))
+    )
+
+    // —— L1：把 DSH 技能库接进应用（doc §六 第一条验收标准）——
+    const skillPanel = readSrc('src/components/SkillPanel.vue')
+    check(
+      'Agent 技能：能定位本机 DSH 技能库（~/.dsh/skills）',
+      /pub async fn agent_skills_dir/.test(rs) && /#\[cfg\(feature = "net"\)\]\s*commands::agent::agent_skills_dir/.test(lib)
+    )
+    check(
+      'Agent 技能：技能库只数「含 SKILL.md 的目录」（不然会混进 README.md 这类散文件）',
+      /join\("SKILL\.md"\)\.is_file\(\)/.test(rs)
+    )
+    check(
+      'Agent 技能：技能面板有一键接入入口（不用作者自己知道 ~/.dsh/skills 在哪）',
+      /async function useDshLibrary/.test(skillPanel) && /agentSkillsDir\(\)/.test(skillPanel)
+    )
+    check(
+      'Agent 技能：接入后如实报「发现 N 个 / 合并后共 M 个」（作者不用猜接上没有）',
+      /发现 \$\{r\.count\} 个技能，合并后共 \$\{n\} 个/.test(skillPanel)
+    )
+    check(
+      'Agent 技能：调试出口在验收构建里也挂（e2e 跑的是 vite preview，只挂 DEV 会让那节静默跳过）',
+      /import\.meta\.env\.DEV \|\| import\.meta\.env\.VITE_E2E === '1'/.test(readSrc('src/main.ts')) &&
+        /VITE_E2E: '1'/.test(readSrc('scripts/e2e/run.mjs'))
+    )
+  }
+
+  /* 56. AI 生成设定（世界观 / 人物 / 势力…）
+
+     这条链最容易出错的地方不在"生成"，而在**把生成结果落成一条条文件**：
+     模型会给 Markdown 表格，得容错地解析、洗掉不能当文件名的字符、别覆盖作者
+     手写的同名条目。这一节钉的就是那几步。 */
+  {
+    const wb = readSrc('src/core/worldbuild.ts')
+    const panel = readSrc('src/components/CodexPanel.vue')
+    const cand = readSrc('src/components/CandidatePanel.vue')
+    const aiStore = readSrc('src/stores/ai.ts')
+
+    check('设定生成：有独立的提示词模块（不跟大纲推荐混在一起）', /export function settingGenPrompt/.test(wb))
+    check(
+      '⚠ 设定生成：材料是事实来源，提示词里明写「不得矛盾」',
+      /这是事实来源，生成的内容不得与之矛盾/.test(wb)
+    )
+    check(
+      '设定生成：把已有条目名给出去，避免重名（重名会互相覆盖）',
+      /已经存在的设定条目/.test(wb) && /不要重复生成/.test(wb)
+    )
+    check(
+      '⚠ 设定生成：解析器容错（表头按内容认，不是固定第几行 —— 模型多写一行就错位）',
+      /function isSeparator/.test(wb) && /headerSeen/.test(wb)
+    )
+    check(
+      '设定生成：全角竖线也认（中文输入法下模型经常吐 ｜）',
+      /replace\(\/｜\/g, '\|'\)/.test(wb)
+    )
+    check(
+      '⚠ 设定生成：名称洗成合法文件名（路径分隔符 + Windows 保留名 con/nul）',
+      /export function sanitizeName/.test(wb) &&
+        /const RESERVED/.test(wb) &&
+        wb.includes('.replace(/[\\\\/:*?"<>|]/g') &&
+        wb.includes('.replace(/[\\r\\n\\t]/g') &&
+        /RESERVED\.test\(s\)/.test(wb)
+    )
+    check(
+      '设定生成：代码围栏 / 解释文字跳过（不然一堆客套话会被当成条目）',
+      /if \(\/\^```\/\.test\(line\)\) continue/.test(wb) && /match\(\/\^#\{2,3\}\\s\*/.test(wb)
+    )
+    check(
+      '设定生成：正文是「模板骨架 + AI 描述」（作者还能接着往小节里补）',
+      /function settingBody/.test(cand) && /defaultBody\(it\.kind, it\.name\)/.test(cand)
+    )
+    check(
+      '⚠ 设定生成：重名跳过、不覆盖作者手写的条目',
+      /existing\.has\(it\.name\)/.test(cand) && /跳过 \$\{skipped\} 条同名（不覆盖已有）/.test(cand)
+    )
+    check(
+      '⚠ 设定生成：解析失败不落盘（宁可让作者复制原文，也不能写半成品）',
+      /if \(!items\.length\)/.test(cand) && /原文保留在候选里/.test(cand)
+    )
+    check(
+      '设定生成：产出进候选区，点「写入设定库」才落盘（与所有 AI 功能一条规矩）',
+      /c\.mode === 'setting'" class="primary" @click="adoptSetting/.test(cand.replace(/\s+/g, ' '))
+    )
+    check(
+      '设定生成：面板里只在配了 AI 时出现（纯离线作者不该看见点不通的按钮）',
+      /v-if="aiEnabled\(\)" class="gen"/.test(panel)
+    )
+    check(
+      '设定生成：Candidate.mode 加进了 setting，且 labelOf 有对应中文名',
+      /'fix' \| 'setting'/.test(readSrc('src/core/types.ts')) && /setting: '设定生成'/.test(aiStore)
+    )
+    check(
+      '⚠ 设定生成：不套章节头（「当前章节：第3章」会把设定带成剧情摘要）',
+      /args\.mode === 'setting'/.test(aiStore) && /不针对某一章/.test(aiStore)
+    )
+
+    /* 综合大纲 —— 用户明确要的「AI 推荐世界观和人物设定，综合大纲和作品标签」。
+       判定点是**大纲真的进了提示词**，而不是界面上提了一句。 */
+    const outlineDlg = readSrc('src/components/OutlineDialog.vue')
+    check(
+      '⚠ 设定生成：大纲进提示词，且写明「设定要托住故事走向」（不能只写在界面上）',
+      /outline: genOutline\.value/.test(panel) && /你生成的设定必须能托住它/.test(wb)
+    )
+    check(
+      '设定生成：大纲从文件读（不重新解析骨架 —— 模型看得懂 Markdown，解析反而丢信息）',
+      /async function loadOutline/.test(panel) && /condenseOutline/.test(wb)
+    )
+    check(
+      '⚠ 设定生成：作者手写的「剧情大纲 / 全书」优先于软件生成的 大纲.md（别被空模板压过去）',
+      /const rank = \(n: string\)/.test(panel) &&
+        /n\.includes\('剧情大纲'\) \|\| n\.includes\('全书'\) \? 0/.test(panel) &&
+        /\.sort\(\(a, b\) => rank\(a\) - rank\(b\)/.test(panel)
+    )
+    check(
+      '设定生成：换作品重读大纲（上一部的大纲留着会把新作品的设定带偏）',
+      /ensureCodex\(true\)[\s\S]{0,160}loadOutline\(\)/.test(panel)
+    )
+    /* immediate watch 在 setup 阶段就同步跑，它碰到的 `const` ref 必须先声明。
+       栽过一次：genOutline 声明在 watch 之后 → TDZ → 整个面板白屏，
+       而 typecheck 与静态断言都看不出来。这里按出现位置钉死。 */
+    check(
+      '⚠ 设定生成：大纲 ref 声明在 immediate watch 之前（声明在后面就是 TDZ，面板直接白屏）',
+      panel.indexOf('const genOutline = ref') > -1 &&
+        panel.indexOf('const genOutline = ref') < panel.indexOf('ensureCodex(true)') &&
+        panel.indexOf('const genOutlineName = ref') < panel.indexOf('ensureCodex(true)')
+    )
+    check(
+      '设定生成：大纲截断时留话给模型（别把「没写到的章」当成故事已结束）',
+      /不要当作故事已结束/.test(wb)
+    )
+    check(
+      '设定生成：剪掉表格分隔行（| --- | 对模型零信息量，还占长度）',
+      wb.includes('.filter((l) => !/^\\|[\\s:|-]+\\|$/.test(l.trim()))')
+    )
+
+    /* 综合标签 —— 标签不落盘是这功能的真实拦路虎，必须显式存一份 */
+    check(
+      '⚠ 设定生成：标签被显式记住（标签原本不落盘，不存一份就永远是空串）',
+      /export function rememberTags/.test(wb) && /export function savedTags/.test(wb) && /mozhan\.settingTags/.test(wb)
+    )
+    check(
+      '设定生成：作者点过的标签在大纲面板存下来，生成设定时读回来',
+      /watch\(allTags, \(v\) => rememberTags\(v\)\)/.test(outlineDlg) &&
+        /rememberTags\(allTags\.value\)/.test(outlineDlg) &&
+        /tags: genTags\.value/.test(panel)
+    )
+    check(
+      '设定生成：标签读取有 try/catch（隐私模式 / 配额满不该把生成流程带崩）',
+      /if \(typeof localStorage === 'undefined'\) return ''/.test(wb)
+    )
+    check(
+      '设定生成：提示词里要求调性跟标签一致（标签说悬疑就别写成轻松日常）',
+      /题材与调性要和上面的标签一致/.test(wb)
+    )
+    check(
+      '⚠ 设定生成：界面摊开「AI 实际会看到的输入」（大纲文件名 + 字数百标签），作者不用猜',
+      /AI 实际会看到的输入|大纲：/.test(panel) &&
+        /genOutlineName/.test(panel) &&
+        /genTags/.test(panel) &&
+        /去「大纲 → AI 推荐」点几个/.test(panel)
+    )
+
+    /* ---- 提示词里到底有没有那两样（静态 gate 只证明代码写了，这里证明跑出来的串里有）---- */
+    const full = settingGenPrompt({
+      title: '雾港夜航',
+      brief: '一个船工被卷进旧案',
+      tags: '悬疑 · 都市 · 第三人称',
+      outline: '## 第1卷\n**卷目标**：找到失踪的货单\n| 章节 | 目标 | 字数 |\n| --- | --- | --- |\n| 灯下的信 | 主角收到匿名信 | 3000 |',
+      material: '世界只有一座雾港，不许出现外星科技。',
+      existing: ['张三'],
+      kinds: ['character'],
+      perKind: 3
+    })
+    check('⚠ 设定生成：大纲内容真的进了提示词（不是只传了个字段名）', full.includes('找到失踪的货单') && full.includes('灯下的信'))
+    check('⚠ 设定生成：标签真的进了提示词', full.includes('悬疑 · 都市 · 第三人称'))
+    /* 提示词末尾自己带了一段格式示例（含 | --- |），所以不能拿整串判「有没有分隔行」——
+       要看的是**大纲那一段**被洗过：`| 灯下的信 |` 还在，`| --- |` 那一行没了。 */
+    const outlineSeg = full.slice(full.indexOf('作品的现有大纲'), full.indexOf('每个类型生成'))
+    check('设定生成：大纲里的分隔行被剪掉，但正文行留着（|---| 零信息量又占长度）', outlineSeg.includes('灯下的信') && !outlineSeg.includes('| --- |'))
+    check('设定生成：已有条目名进了提示词（防重名）', full.includes('张三') && full.includes('不要重复生成'))
+    check('设定生成：材料与大纲是两段（材料是不许矛盾的事实，大纲是要托住的走向）', full.includes('不得与之矛盾') && full.includes('必须能托住它'))
+
+    // 截断：长大纲既不能整段灌进去，也不能让模型以为故事就到此为止
+    const long = condenseOutline('## 第1卷\n' + '内容。'.repeat(4000), 200)
+    check('设定生成：超长大纲被截断，且留了「后面还有」的话', long.length < 400 && long.includes('不要当作故事已结束'))
+    check('设定生成：不长的大纲原样返回（不做无谓加工）', condenseOutline('## 第1卷\n短得很。') === '## 第1卷\n短得很。')
+    check('设定生成：空大纲返回空串（提示词里就不该出现那一整段）', condenseOutline('') === '' && !settingGenPrompt({ title: 'x', brief: '', tags: 'a', outline: '', kinds: ['lore'], perKind: 1 }).includes('现有大纲'))
+
+    /* ---- 解析：模型实际会吐的东西 ---- */
+    const sheet = [
+      '好的，我来为这部作品生成设定：', // 客套话，必须被忽略
+      '```markdown', // 代码围栏
+      '## 人物',
+      '| 名称 | 描述 |',
+      '| --- | --- |',
+      '| 沈砚 | 雾港的老船工，藏着二十年前的旧案。 |',
+      '| con | 故意用 Windows 保留名试探。 |',
+      '',
+      '## 组织 / 势力',
+      '| 名称 | 描述 |',
+      '| --- | --- |',
+      '| 义和行 | 码头上的走私组织。 |',
+      '```',
+      '以上是我的推荐，希望对你有帮助。' // 收尾客套话
+    ].join('\n')
+    const parsed = parseSettingSheet(sheet)
+    check('⚠ 设定生成：客套话没有被当成条目（前后各一句都不行）', parsed.length === 3)
+    check('设定生成：全角斜杠小标题认得出（「组织 / 势力」→ organization）', parsed.some((p) => p.kind === 'organization' && p.name === '义和行'))
+    check('⚠ 设定生成：Windows 保留名 con 被改名（不然写文件会被系统拒）', parsed.some((p) => p.name === 'con_设定') && !parsed.some((p) => p.name === 'con'))
+    check('设定生成：描述跟着条目走（不是空的）', !!parsed.find((p) => p.name === '沈砚')?.desc.includes('旧案'))
+
+    check('设定生成：路径分隔符洗成 ·（写文件才不会被拒）', sanitizeName('a/b\\c:d*e?f"g<h>i|j') === 'a·b·c·d·e·f·g·h·i·j')
+    check('设定生成：首尾点与空格清掉（Windows 上「.name」建不出来）', sanitizeName('  ..张三..  ') === '张三')
+    check('设定生成：空名字返回空串（调用方据此跳过，不写无名文件）', sanitizeName('   ') === '' && sanitizeName('...') === '')
+    check('设定生成：没给标签时提示词退化成「自行判断」（不是留一句空的「题材标签：」）', settingGenPrompt({ title: 'x', brief: '', tags: '', kinds: ['lore'], perKind: 1 }).includes('作者没给标签'))
+  }
+
+  /* 57. 设定生成的大纲来源：真的去作品目录里读得出东西
+
+     上面那节验的是「提示词拼得对」，这节验「喂进去的料是作者目录里的真货」。
+     用内存 FS 真建一部作品、真写两个大纲文件，比 mock 一个 readFile 更能说明问题 ——
+     排序、找不到、读不到这几条分支都得走一遍。 */
+  {
+    const parent = host.rootRef()
+    const ref = await ws.createWork(parent, '设定生成测试', {})
+    await fs().writeFile(ref, ['大纲', '大纲.md'], '# 软件生成的大纲\n空的模板。\n')
+    await fs().writeFile(ref, ['大纲', '剧情大纲.md'], '# 作者手写的剧情大纲\n主角在雾港发现旧案。\n')
+
+    // 复刻 CodexPanel.loadOutline 的选择逻辑：扫目录 → 按名字定优先级 → 取第一个非空的
+    const rank = (n: string) => (n.includes('剧情大纲') || n.includes('全书') ? 0 : n === '大纲.md' ? 1 : 2)
+    const names = (await fs().listDir(ref, ['大纲']))
+      .filter((e) => e.kind === 'file' && /\.(md|txt)$/i.test(e.name))
+      .map((e) => e.name)
+    const ordered = [...names].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    check('⚠ 设定生成：作者手写的剧情大纲排在软件空模板前面', ordered[0] === '剧情大纲.md', ordered.join(','))
+    const picked = condenseOutline(await fs().readFile(ref, ['大纲', ordered[0]]))
+    check('⚠ 设定生成：读出来的是作者那份（不是空模板）', picked.includes('发现旧案') && !picked.includes('空的模板'))
+
+    // 两者都试完还读不到，才该报「还没读到大纲」
+    const emptyRef = await ws.createWork(parent, '没有大纲的作品', {})
+    await fs().remove(emptyRef, ['大纲', '大纲.md'])
+    let found = ''
+    try {
+      const es = (await fs().listDir(emptyRef, ['大纲'])).filter((e) => e.kind === 'file' && /\.(md|txt)$/i.test(e.name))
+      for (const e of es) {
+        const t = condenseOutline(await fs().readFile(emptyRef, ['大纲', e.name]))
+        if (t.trim()) {
+          found = t
+          break
+        }
+      }
+    } catch {
+      /* 连目录都没有 */
+    }
+    check('设定生成：目录里确实没有大纲时，老老实实返回空（界面据此显示指路文案）', found === '')
+
+    // 目录都不存在：listDir 的失败必须被面板那层 try/catch 兜住，不能把人吓一跳
+    const bareRef = await ws.createWork(parent, '没有大纲目录', {})
+    await fs().remove(bareRef, ['大纲'])
+    let threw = false
+    try {
+      await fs().listDir(bareRef, ['大纲'])
+    } catch {
+      threw = true
+    }
+    check('设定生成：大纲目录不存在时列表会抛（所以面板里那层 try/catch 是必需的，不是装饰）', threw)
   }
 
   console.log(failures === 0 ? '\n全部通过 ✅' : `\n失败 ${failures} 项 ❌`)

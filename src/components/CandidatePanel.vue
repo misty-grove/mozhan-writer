@@ -1,18 +1,64 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import fs from '@/platform'
-import { aiState, adoptSummary, appendToChapter, enabled } from '@/stores/ai'
+import { aiState, adoptSummary, appendToChapter, clearCandidates, enabled, removeCandidate } from '@/stores/ai'
 import { applyApi, editorState } from '@/stores/editor'
 import { currentChapter, state } from '@/stores/workspace'
+import { askConfirm } from '@/stores/dialog'
 import { download } from '@/core/exportDoc'
 import { countWords } from '@/core/util'
 import { parseOutlineMarkdown, toOutlineMarkdown } from '@/core/outline'
+import { parseSettingSheet } from '@/core/worldbuild'
+import { defaultBody } from '@/core/codex'
+import { addEntry, codexState, refreshCodex } from '@/stores/codex'
 
 const openId = ref('')
 /** 纠错候选的「改动说明」当前展开的是哪一张 */
 const openNotesId = ref('')
 /** 采纳失败的原因。桌面壳与部分 WebView 会禁掉原生 alert，反馈只能落在自己身上 */
 const notice = ref('')
+
+/**
+ * 删一张候选。
+ *
+ * 已采纳的要多问一句：卡片上的「已采纳」是作者判断"这段要不要留在候选区"的唯一线索，
+ * 误删之后没法撤销（候选只活在内存里，不落盘）。
+ */
+async function removeOne(c: any) {
+  if (c.applied) {
+    const okDel = await askConfirm({
+      title: '删除这张候选',
+      message: `「${c.title}」已经采纳过了。删掉只是把卡片从候选区移走，正文里已经写进去的内容一个字都不会动。`,
+      okText: '删除',
+      danger: true
+    })
+    if (!okDel) return
+  }
+  removeCandidate(c.id)
+  if (openId.value === c.id) openId.value = ''
+  if (openNotesId.value === c.id) openNotesId.value = ''
+}
+
+async function clearAll() {
+  const n = aiState.candidates.length
+  if (!n) return
+  const unapplied = aiState.candidates.filter((c) => !c.applied).length
+  const okDel = await askConfirm({
+    title: `清空候选区（${n} 张）`,
+    message: '候选区只是暂存处，删掉不会影响正文已经写进去的内容。',
+    detail: [
+      `共 ${n} 张候选卡`,
+      unapplied ? `其中 ${unapplied} 张还没采纳 —— 删掉后就找不回来了` : '这些都已经采纳过了',
+      '想留下内容的话，先「复制」或「存为 md」'
+    ],
+    okText: '清空',
+    danger: true
+  })
+  if (!okDel) return
+  clearCandidates()
+  openId.value = ''
+  openNotesId.value = ''
+}
 
 function applyLocal(c: any) {
   const api = applyApi.value
@@ -82,6 +128,58 @@ function adoptLabel(c: any): string {
   return '替换选中文本'
 }
 
+/**
+ * 采纳「设定生成」：把 AI 给的设定表拆成一条条设定条目落盘。
+ *
+ * 三件必须做对的事：
+ *  - **解析失败不落盘**：宁可让作者复制原文，也不能把半成品写成文件；
+ *  - **重名不覆盖**：已经存在的设定条目跳过（作者手写的条目金贵）；
+ *  - **如实报数**：写了几个、跳过几个，都告诉作者。
+ */
+async function adoptSetting(c: any) {
+  if (!state.ref) {
+    notice.value = '当前没有打开的作品。'
+    return
+  }
+  const items = parseSettingSheet(c.text)
+  if (!items.length) {
+    notice.value = 'AI 输出的不是可解析的设定表格（要有「## 人物」这类小标题和 | 名称 | 描述 | 表）。原文保留在候选里，可复制后手工整理。'
+    return
+  }
+  const existing = new Set(codexState.entries.map((e) => e.name))
+  let written = 0
+  let skipped = 0
+  const failed: string[] = []
+  for (const it of items) {
+    if (existing.has(it.name)) {
+      skipped++
+      continue
+    }
+    try {
+      await addEntry(it.kind, it.name, { body: settingBody(it) })
+      existing.add(it.name)
+      written++
+    } catch (e: any) {
+      failed.push(it.name)
+    }
+  }
+  await refreshCodex()
+  c.applied = true
+  const bits = [`写入 ${written} 条设定`]
+  if (skipped) bits.push(`跳过 ${skipped} 条同名（不覆盖已有）`)
+  if (failed.length) bits.push(`${failed.length} 条失败：${failed.slice(0, 3).join('、')}`)
+  notice.value = bits.join('；')
+}
+
+/** 把 AI 的描述放进条目正文（套用该类型的模板骨架，作者好继续补） */
+function settingBody(it: { kind: any; name: string; desc: string }): string {
+  const base = defaultBody(it.kind, it.name)
+  // 模板是「# 名称\n\n## 小节…」，把描述插在标题下面，保留后面作者要填的小节
+  const lines = base.split('\n')
+  const head = lines.shift() || `# ${it.name}`
+  return [head, '', it.desc, '', ...lines].join('\n')
+}
+
 async function adopt(c: any) {
   notice.value = ''
   if (c.mode === 'summary') {
@@ -115,11 +213,33 @@ function saveFile(c: any) {
 <template>
   <div class="cand">
     <div class="spread">
-      <b class="tt">候选区（{{ aiState.candidates.length }}）</b>
-      <span class="small dim">不点采纳，绝不写入正文</span>
+      <b class="tt">候选区{{ aiState.candidates.length ? `（${aiState.candidates.length}）` : '' }}</b>
+      <button
+        v-if="aiState.candidates.length"
+        class="text small"
+        title="删除全部候选卡（不动正文）"
+        @click="clearAll"
+      >
+        清空
+      </button>
+      <span v-else class="small dim">不点采纳，绝不写入正文</span>
     </div>
 
     <div v-if="!enabled" class="small dim">未配置 API，候选区为空。</div>
+
+    <!-- Agent 的「过程」：读了哪些文件、调到哪一步。这是 Agent 档与直连 API 最大的体验差别 —— 
+         不显示的话，作者等两分钟只看到一段文本，完全不知道 AI 到底翻了什么。 -->
+    <details v-if="aiState.agentSteps.length" class="steps" :open="aiState.generating">
+      <summary class="small">
+        <b>{{ aiState.generating ? 'Agent 运行中…' : 'Agent 过程' }}</b>
+        <span class="dim">（{{ aiState.agentSteps.length }} 步）</span>
+      </summary>
+      <ol class="step-list small">
+        <li v-for="(s, i) in aiState.agentSteps" :key="i" :class="'k-' + s.kind">{{ s.label }}</li>
+      </ol>
+    </details>
+    <div v-if="aiState.generating && aiState.streaming" class="stream small">{{ aiState.streaming.slice(-500) }}</div>
+
     <div v-else-if="!aiState.candidates.length" class="small dim empty">
       还没有候选。去「上下文」面板生成，或在「记忆」面板做逐章摘要。
     </div>
@@ -140,6 +260,7 @@ function saveFile(c: any) {
           <span>{{ countWords(c.text) }} 字</span>
           <button class="btn-icon" title="复制" @click="copyText(c)">⧉</button>
           <button class="btn-icon" title="存为 md" @click="saveFile(c)">↓</button>
+          <button class="btn-icon danger" title="删除这张候选（不动正文）" @click="removeOne(c)">✕</button>
         </div>
       </div>
       <div class="small dim meta">{{ c.model }} · {{ c.skill || '无技能' }} · {{ c.createdAt }}</div>
@@ -156,11 +277,13 @@ function saveFile(c: any) {
       <div class="row">
         <button v-if="c.mode === 'summary'" class="primary" @click="adopt(c)">写入记忆库</button>
         <button v-else-if="c.mode === 'outline'" class="primary" @click="adoptOutline(c)">写入大纲文件</button>
+        <button v-else-if="c.mode === 'setting'" class="primary" @click="adoptSetting(c)">写入设定库</button>
         <template v-else>
           <button class="primary" @click="adopt(c)">{{ adoptLabel(c) }}</button>
           <button @click="copyText(c)">复制</button>
         </template>
         <button class="text small" @click="openId = openId === c.id ? '' : c.id">{{ openId === c.id ? '收起' : '展开全文' }}</button>
+        <button class="text small danger-text" @click="removeOne(c)">删除</button>
       </div>
     </div>
   </div>
@@ -193,6 +316,49 @@ function saveFile(c: any) {
 }
 .notice .btn-icon {
   flex: 0 0 auto;
+}
+/* Agent 过程：默认收起（作者多数时候只关心结果），跑的时候自动摊开 */
+.steps {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  padding: 7px 10px;
+}
+.steps summary {
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.step-list {
+  margin: 7px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 200px;
+  overflow: auto;
+  line-height: 1.6;
+}
+.step-list li {
+  color: var(--text-dim);
+}
+/* 工具调用是「它真的动手了」的证据，给一点对比度；诊断信息用警示色 */
+.step-list li.k-tool_call {
+  color: var(--text);
+}
+.step-list li.k-error,
+.step-list li.k-diag {
+  color: var(--warn);
+}
+.stream {
+  max-height: 150px;
+  overflow: auto;
+  white-space: pre-wrap;
+  line-height: 1.7;
+  color: var(--text-dim);
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
 }
 /* 卡片皮肤（边框/圆角/阴影）吃 global 的 .card，这里只管排布和悬停反馈 */
 .cand .card:hover {
@@ -239,5 +405,13 @@ function saveFile(c: any) {
   overflow: auto;
   white-space: pre-wrap;
   line-height: 1.7;
+}
+/* 删除入口：图标态用警示色，文字态只染字，免得整排按钮都在抢注意力 */
+.btn-icon.danger:hover {
+  color: var(--err);
+  border-color: var(--err);
+}
+.danger-text:hover {
+  color: var(--err);
 }
 </style>

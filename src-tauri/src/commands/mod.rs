@@ -28,5 +28,9 @@
 // 它带的 native-tls 在安卓上会拖出 OpenSSL 交叉编译）。
 #[cfg(feature = "net")]
 pub mod ai;
+// DSH Agent 后端：把本机的 dsh headless 当第二个 AI 引擎（带工具、能读写作品目录）。
+// 与 ai.rs 同挂 net：DSH 自己就是网络客户端，放进"没有 net 的移动端构建"没有意义。
+#[cfg(feature = "net")]
+pub mod agent;
 pub mod fs;
 pub mod host;

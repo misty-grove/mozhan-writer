@@ -1,12 +1,17 @@
 import { computed, reactive, ref } from 'vue'
+import fs from '@/platform'
 import { buildContextItems, contextTotal, DEFAULT_BUILD, renderContext, type BuildOptions } from '@/core/context'
 import * as layer from '@/core/ai'
-import { aiEnabled, settings } from '@/core/settings'
+import { AgentStream } from '@/core/agent'
+import { planDelivery, rememberLayoutSkill, layoutGuide } from '@/core/agentSkills'
+import { agentAvailable, agentCancel, agentRun, agentSyncSkills } from '@/platform/aiBridge'
+import { aiEnabled, agentPreferred, apiReady, settings } from '@/core/settings'
 import { countWords, fmtTime, uid } from '@/core/util'
 import { readChapterBody } from '@/core/workspace'
 import { updateMemorySection } from '@/core/memory'
 import { readMemoryFile, writeMemoryFile } from '@/core/memory'
 import * as skillsApi from '@/core/skills'
+import { onWorkReset } from '@/core/hooks'
 import type { Candidate, ContextItem, Skill } from '@/core/types'
 import * as wsStore from './workspace'
 import { applyApi } from './editor'
@@ -21,7 +26,15 @@ export const aiState = reactive({
   generating: false,
   streaming: '' as string,
   error: '' as string,
-  batch: { running: false, done: 0, total: 0, logs: [] as string[], cancel: false }
+  batch: { running: false, done: 0, total: 0, logs: [] as string[], cancel: false },
+  /**
+   * Agent 运行时的「过程」列表（读了哪些文件、调了哪些工具）。
+   * 这是 L2 与直连 API 最大的体验差别：作者能看见 AI 到底翻了什么，
+   * 而不是等半分钟拿到一段不知从哪来的文本。
+   */
+  agentSteps: [] as Array<{ kind: string; label: string }>,
+  /** 本次跑的是哪条路（UI 上标一下，出问题时作者能说清是哪个引擎） */
+  engineUsed: '' as 'api' | 'agent' | ''
 })
 
 export const enabled = computed(() => aiEnabled())
@@ -29,6 +42,55 @@ export const enabled = computed(() => aiEnabled())
 export const contextStat = computed(() => contextTotal(aiState.items))
 
 let abort: AbortController | null = null
+/** 当前 Agent 运行的取消令牌 */
+let agentToken = ''
+
+/* ------------------------------------------------------------------ 候选区增删 */
+
+/**
+ * 删掉一张候选。
+ *
+ * 作者反馈过一件事：续写之后候选卡片**没有删除入口**，窗口一直挂在那儿，
+ * 换了作品还在（`aiState` 是模块级的，`openWork` / `closeWork` 都不碰它）。
+ * 所以删除和「换作品清空」必须一起补 —— 只补按钮，跨作品残留照样在。
+ */
+export function removeCandidate(id: string): boolean {
+  const i = aiState.candidates.findIndex((c) => c.id === id)
+  if (i < 0) return false
+  aiState.candidates.splice(i, 1)
+  return true
+}
+
+export function clearCandidates(): number {
+  const n = aiState.candidates.length
+  aiState.candidates = []
+  return n
+}
+
+/**
+ * 换作品 / 关作品时把 AI 层的**作品相关**状态清掉。
+ *
+ * 不清的两样：
+ * - `skills` 里内置的那部分与作品无关，重开作品时会重新 merge，清掉只会闪一下；
+ * - `buildOpts` 是作者的使用习惯，跨作品保留才顺手。
+ *
+ * 每一样都对应一个真实的串号症状：候选卡带着上一部的正文、上下文条目指向
+ * 上一部的章节、批量摘要进度条停在一半、流式缓冲里还留着上一部的半句话。
+ */
+export function resetForWork() {
+  abort?.abort()
+  abort = null
+  aiState.candidates = []
+  aiState.items = []
+  aiState.streaming = ''
+  aiState.error = ''
+  aiState.generating = false
+  aiState.batch = { running: false, done: 0, total: 0, logs: [], cancel: false }
+}
+
+// 登记到 core 的钩子里：workspace 换作品时回调这里。
+// 反过来 import 就是 stores/ai ↔ stores/workspace 成环，见 core/hooks.ts 的说明。
+onWorkReset(resetForWork)
 
 export async function loadSkills() {
   aiState.skills = await skillsApi.mergeSkills(wsStore.state.ref)
@@ -100,12 +162,200 @@ export interface GenerateArgs {
   extra?: string
   /** 纠错用：没有选区时对整章做，采纳方式随之不同（见 Candidate.wholeChapter） */
   wholeChapter?: boolean
+  /** 内部用：本次是谁产的（只影响候选标题上的标注） */
+  engineTag?: 'api' | 'agent'
+}
+
+/* ------------------------------------------------------------------ Agent 引擎 */
+
+/** 会话 id 按作品存：同一部书跨章复用，换作品换会话（不换会前后文互串） */
+function sessionKey(): string {
+  const ref = wsStore.state.ref
+  return ref ? `${ref.name}::${ref.id}` : ''
+}
+
+export function agentSession(): string {
+  const k = sessionKey()
+  if (!k) return ''
+  return settings.ai.agentSessions[k] || ''
+}
+
+function rememberSession(id: string) {
+  const k = sessionKey()
+  if (!k || !id) return
+  settings.ai.agentSessions = { ...settings.ai.agentSessions, [k]: id }
+}
+
+export function agentConfigured(): boolean {
+  return agentPreferred()
+}
+
+/**
+ * 用 Agent 跑一次生成任务。
+ *
+ * 与 `generate()` 的关键差别：**上下文不在这里拼**。
+ * Agent 自己会去读作品目录（大纲 / 设定 / 记忆），那正是它比「直连 API」强的地方 ——
+ * 把上下文硬塞进提示词反而占了它的步数与窗口。所以这里只交任务书 + 技能 + 装配面板里
+ * 作者**手动勾选**的那几项（作者勾了就是要它一定看到），其余留给 Agent 自己去找。
+ *
+ * 返回 null 表示「这条路走不通，该回落直连 API」（both 档才会用到）。
+ */
+export async function generateWithAgent(args: GenerateArgs): Promise<Candidate[] | null> {
+  if (!agentPreferred()) return null
+  const ref = wsStore.state.ref
+  if (!ref) {
+    aiState.error = '还没有打开作品 —— Agent 需要在作品目录里干活。'
+    return []
+  }
+  if (!(await agentAvailable())) {
+    if (settings.ai.engine === 'agent') {
+      aiState.error = 'Agent 后端只在桌面端可用（浏览器与手机请改用直连 API）。'
+      return []
+    }
+    return null // both：悄悄回落
+  }
+
+  await buildContext(args.chapterId)
+  aiState.error = ''
+  aiState.agentSteps = []
+  aiState.streaming = ''
+  aiState.engineUsed = 'agent'
+  aiState.generating = true
+
+  const instruction = buildInstruction(args)
+  const context = renderContext(aiState.items, instruction)
+  const task = [layoutGuide(), skillPrompt(args.skill || ''), instruction, context].filter(Boolean).join('\n\n---\n\n')
+
+  const token = uid('agentrun')
+  agentToken = token
+  const stream = new AgentStream()
+  const out: Candidate[] = []
+  try {
+    const id = await fsAdapterRoot()
+    // 先把技能投递到 DSH 技能库 —— 否则它会拿自己那套 project-layout（认 spec/ stories/）
+    // 去读作者的作品目录，把 大纲/ 正文/ 当成"不合规范"（本机实测）。
+    await syncSkillsToAgent()
+    const res = await agentRun(
+      {
+        task,
+        cwd: id,
+        sessionId: agentSession() || undefined,
+        profile: settings.ai.agentProfile || 'headless',
+        permission: settings.ai.agentPermission,
+        cli: settings.ai.agentCli || undefined,
+        timeoutSecs: settings.ai.agentTimeoutSecs
+      },
+      token,
+      (line) => {
+        const ev = stream.push(line)
+        if (!ev) return
+        if (ev.kind === 'text' && ev.text) aiState.streaming = stream.text
+        if (ev.label) aiState.agentSteps = stream.steps.slice(-40)
+      },
+      (d) => {
+        // stderr 一般是真错误（未登录 / profile 缺失）。留着给作者看，不弹窗打断。
+        aiState.agentSteps = [...stream.steps.slice(-39), { kind: 'diag', label: `DSH：${d.slice(0, 160)}` }]
+      }
+    )
+    if (res.sessionId) rememberSession(res.sessionId)
+    const text = (res.finalText || stream.result()).trim()
+    if (!text) {
+      aiState.error = res.cancelled ? '已取消' : 'Agent 没有产出内容（看看「过程」里卡在哪一步）'
+      return out
+    }
+    const c: Candidate = {
+      id: uid('cand'),
+      title: `${labelOf(args.mode)}${args.engineTag === 'agent' ? ' · Agent' : ''}`,
+      text,
+      model: `DSH ${settings.ai.agentProfile || 'headless'}`,
+      skill: args.skill || '',
+      createdAt: fmtTime(new Date()),
+      mode: args.mode,
+      targetChapterId: args.chapterId || wsStore.state.currentId,
+      tokens: Math.ceil(text.length / 2)
+    }
+    aiState.candidates.unshift(c)
+    out.push(c)
+    return out
+  } catch (e: any) {
+    const msg = String(e?.message || e)
+    // both 档：Agent 这条路失败就回落直连 API，别让作者两头空
+    if (settings.ai.engine === 'both' && apiReady()) {
+      aiState.engineUsed = ''
+      aiState.generating = false
+      return null
+    }
+    aiState.error = msg
+    return out
+  } finally {
+    agentToken = ''
+    aiState.streaming = ''
+    aiState.generating = false
+  }
+}
+
+/**
+ * 把「本应用认识的技能」投递给 DSH。
+ *
+ * 不做这件事的后果是**实测过的**：DSH 会拿它自己的 `project-layout` 技能
+ * （认 `spec/ stories/ memory/`）去理解作者的作品目录，把 `大纲/ 正文/` 标成
+ * "不合规范"，还建议作者新建 `spec/` —— 而本应用的作品目录才是权威。
+ *
+ * 失败不阻断：技能没投递成功顶多是 Agent 少一点领域知识，任务照样能跑。
+ * 所以这里吞掉异常，只把结果记进过程列表（作者能在「过程」里看见）。
+ */
+async function syncSkillsToAgent(): Promise<void> {
+  try {
+    // 技能目录可能还没加载（比如刚打开作品就直接续写）—— 先确保有一份
+    if (!aiState.skills.length) await loadSkills()
+    // 记住布局技能，好在任务提示词里点名（否则 DSH 要猜名字，白烧一轮往返）
+    rememberLayoutSkill(aiState.skills)
+    const plan = planDelivery(aiState.skills)
+    if (!plan.files.size) return
+    const files = [...plan.files.entries()].map(([name, content]) => ({ name, content }))
+    await agentSyncSkills(files)
+  } catch (e) {
+    // 技能是加分项，不是必需项
+    console.warn('[agent] 技能同步失败：', e)
+  }
+}
+
+/** 作品目录的绝对路径（Agent 的 cwd） */
+async function fsAdapterRoot(): Promise<string> {
+  const ref = wsStore.state.ref!
+  const anyFs = fs as any
+  if (typeof anyFs.absPath === 'function') {
+    const p = await anyFs.absPath(ref)
+    if (p) return String(p)
+  }
+  // 拿到绝对路径是 Agent 模式的硬需求：没有它就没法给 cwd。
+  // 桌面上 DirRef 里带的 id 本身就是路径（见 platform/tauriAdapter.ts）。
+  const guess = String(ref.id || '')
+  if (/^[A-Za-z]:[\\/]/.test(guess) || guess.startsWith('/')) return guess
+  throw new Error('拿不到作品的绝对路径，Agent 无法启动（桌面端才支持 Agent）。')
+}
+
+export function cancelGenerate() {
+  if (agentToken) {
+    const t = agentToken
+    agentToken = ''
+    agentCancel(t).catch(() => {})
+    aiState.generating = false
+    return
+  }
+  abort?.abort()
+  aiState.generating = false
 }
 
 export async function generate(args: GenerateArgs): Promise<Candidate[]> {
   if (!enabled.value) {
     aiState.error = '尚未配置 API，AI 层不可用'
     return []
+  }
+  // 引擎分叉：Agent 档直接走 DSH；both 档 Agent 失败会返回 null，这里接着往下走直连。
+  if (agentPreferred()) {
+    const viaAgent = await generateWithAgent(args)
+    if (viaAgent !== null) return viaAgent
   }
   await buildContext(args.chapterId)
   aiState.error = ''
@@ -169,11 +419,6 @@ export async function generate(args: GenerateArgs): Promise<Candidate[]> {
   }
 }
 
-export function cancelGenerate() {
-  abort?.abort()
-  aiState.generating = false
-}
-
 function labelOf(mode: Candidate['mode']): string {
   return {
     continue: '续写',
@@ -184,12 +429,18 @@ function labelOf(mode: Candidate['mode']): string {
     summary: '章节摘要',
     outline: '大纲生成',
     generate: '生成',
-    fix: '纠错'
+    fix: '纠错',
+    setting: '设定生成'
   }[mode]
 }
 
 function buildInstruction(args: GenerateArgs): string {
   const ch = wsStore.currentChapter.value
+  // 「设定生成」不针对某一章：它是给整个作品补世界观的，硬套章节头会误导模型
+  // （「当前章节：第3章」这种上下文会让它把设定写成剧情摘要）。
+  if (args.mode === 'setting') {
+    return `${args.instruction || ''}\n\n以下是本作品已有的上下文（只作参考，不要复述）：`
+  }
   const head = `你要为一个Markdown文本文件写内容。
 当前章节：${ch?.title || ''}（状态：${ch?.status || ''}）
 ${ch?.meta.target ? `本章目标：${ch.meta.target}` : ''}

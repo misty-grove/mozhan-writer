@@ -42,6 +42,17 @@ macro_rules! invoke_handler {
             commands::ai::ai_models,
             #[cfg(feature = "net")]
             commands::ai::ai_chat,
+            // DSH Agent 后端（桌面端专属）
+            #[cfg(feature = "net")]
+            commands::agent::agent_probe,
+            #[cfg(feature = "net")]
+            commands::agent::agent_run,
+            #[cfg(feature = "net")]
+            commands::agent::agent_cancel,
+            #[cfg(feature = "net")]
+            commands::agent::agent_sync_skills,
+            #[cfg(feature = "net")]
+            commands::agent::agent_skills_dir,
             // 原生目录选择器（移动端没有，见 commands/fs.rs 的说明）
             #[cfg(not(mobile))]
             commands::fs::fs_pick_dir,

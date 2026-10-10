@@ -114,3 +114,130 @@ export async function aiChatStream(
     clearTimeout(timer)
   }
 }
+
+/* ------------------------------------------------------------------ DSH Agent 后端 */
+
+export interface AgentRunArgs {
+  task: string
+  cwd: string
+  sessionId?: string
+  profile?: string
+  /** 'read_only'（默认）| 'write_in_cwd' */
+  permission?: string
+  /** dsh 可执行文件路径；空则 Rust 侧自动探测 */
+  cli?: string
+  timeoutSecs?: number
+}
+export interface AgentRunResult {
+  code: number
+  finalText: string
+  sessionId?: string
+  cancelled: boolean
+}
+
+export interface AgentProbeResult {
+  found: boolean
+  cli?: string
+  version?: string
+  profiles: string[]
+  hint?: string
+  probeError?: string
+}
+
+/**
+ * Agent 后端只在桌面端有 —— 它要 spawn 一个本机进程，浏览器做不到，
+ * 移动端也没带上那条 Rust 命令（见 commands/mod.rs 的 net 门控）。
+ */
+export async function agentAvailable(): Promise<boolean> {
+  if (!hasTauri()) return false
+  return !(await hostInfo()).isMobile
+}
+
+export async function agentProbe(cli?: string): Promise<AgentProbeResult> {
+  if (!(await agentAvailable())) {
+    return { found: false, profiles: [], hint: 'Agent 后端需要桌面端（浏览器与手机不支持）。' }
+  }
+  return tauriInvoke<AgentProbeResult>('agent_probe', { cli: cli || null })
+}
+
+/**
+ * 跑一次 Agent。
+ *
+ * `onLine` 收到的每一行都是**原始 NDJSON**（`{"type":"tool_call",...}`），
+ * 解析规则集中在 `core/agent.ts` —— 和 SSE 那条路一个思路：
+ * Rust 侧只负责"把行搬过来"，认不认得由 JS 决定，DSH 加字段时只改一处。
+ *
+ * `cancelToken` 由**调用方**生成并保管：`agent_run` 要跑很久才返回，
+ * 那时候再去取消已经没有意义了。所以令牌必须先给出去，随时能用它调 `agentCancel`。
+ */
+export async function agentRun(
+  args: AgentRunArgs,
+  cancelToken: string,
+  onLine: SseLineHandler,
+  onDiag?: (d: string) => void,
+  onStarted?: (pid: number) => void
+): Promise<AgentRunResult> {
+  if (!(await agentAvailable())) {
+    throw new Error('Agent 后端需要桌面端（浏览器与手机不支持）')
+  }
+  const { Channel } = await import('@tauri-apps/api/core')
+  const ch = new Channel<{ t: 'line' | 'started' | 'diag'; d?: string; pid?: number }>()
+  ch.onmessage = (m) => {
+    if (m?.t === 'line' && typeof m.d === 'string') onLine(m.d)
+    else if (m?.t === 'diag' && typeof m.d === 'string') onDiag?.(m.d)
+    else if (m?.t === 'started' && typeof m.pid === 'number') onStarted?.(m.pid)
+  }
+  return tauriInvoke<AgentRunResult>('agent_run', {
+    req: { ...args, cancelToken },
+    onEvent: ch
+  })
+}
+
+export async function agentCancel(cancelToken: string): Promise<void> {
+  if (!(await agentAvailable())) return
+  return tauriInvoke<void>('agent_cancel', { cancelToken })
+}
+
+/** 投递技能的结果。 */
+export interface SkillSyncResult {
+  written: string[]
+  skipped: string[]
+  removed: string[]
+  dir?: string
+  error?: string
+}
+
+/**
+ * 把技能同步进 DSH 技能库（`~/.dsh/skills/mozhan-<slug>/SKILL.md`）。
+ *
+ * 为什么非得写文件：DSH 只从 `~/.dsh/skills/<slug>/SKILL.md` 登记技能 ——
+ * `customSkillDirs` 配置在 `--dump-config` 里看着生效，但运行时不被扫描（实测）。
+ * 而且它的技能名必须是 ASCII slug，中文名直接报 `invalid skill name`。
+ * 所以前端先把技能渲染成 ASCII 名的 SKILL.md（`core/agentSkills.ts`），
+ * 由 Rust 侧落盘，且只写 `mozhan-` 前缀的命名空间。
+ */
+export async function agentSyncSkills(files: { name: string; content: string }[]): Promise<SkillSyncResult> {
+  if (!(await agentAvailable())) {
+    return { written: [], skipped: [], removed: [], error: '技能同步需要桌面端。' }
+  }
+  return tauriInvoke<SkillSyncResult>('agent_sync_skills', { files })
+}
+
+/** 本机 DSH 技能库的位置与技能数。 */
+export interface DshSkillsDirResult {
+  found: boolean
+  path?: string
+  count: number
+}
+
+/**
+ * 找本机 DSH 技能库（`~/.dsh/skills`）。
+ *
+ * 用途：一键把它设成应用的「全局技能库」—— DSH 那边装了几十个小说写作技能
+ * （`continuation`、`long-memory`、`style-imitation`…），作者本来得手动去选目录，
+ * 给个按钮一步到位。技能本身是纯文本提示词，读进来不联网也不花钱。
+ */
+export async function agentSkillsDir(): Promise<DshSkillsDirResult> {
+  if (!(await agentAvailable())) return { found: false, count: 0 }
+  return tauriInvoke<DshSkillsDirResult>('agent_skills_dir', {})
+}
