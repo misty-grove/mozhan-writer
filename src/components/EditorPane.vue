@@ -543,6 +543,13 @@ defineExpose({ doFind })
   padding: 28px 32px 45vh;
   display: flex;
   justify-content: center;
+  /* 稿纸是这张滚动画布唯一的 flex item，这里必须 **flex-start**，不能用默认的 stretch：
+     容器是定高的（flex:1 撑满写作区），单行 flex 的行高就等于容器高，stretch 会把
+     稿纸钉死在「一屏高」—— 章节一超过一屏（AI 续写采纳后正文第一次变长就会），
+     ProseMirror 的内容直接从稿纸底下画出去：稿纸的圆角/投影只裹住前几行，
+     后面的字漂在桌面底色上，看起来像「一块白气泡浮在正文上」（2026-10-10 作者实报）。
+     flex-start 让稿纸高度回到「由内容决定」，min-height 仍保证短章也撑满一屏。 */
+  align-items: flex-start;
 }
 /* 稿纸是一张「放在桌面上的纸」：白底、圆角、投影，和四周的桌面（--bg）拉开一层。
    宽度由行内样式 maxWidth（设置里的「稿纸宽度」）封顶，这里负责把它撑满并居中。 */

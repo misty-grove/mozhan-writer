@@ -2,6 +2,7 @@
 name: 目录对照表
 slug: work-layout-map
 description: 【本应用专用】当需要在作品目录里定位文件、或从一个外部 Agent/技能那里接手任务时先读本技能。它声明了"离线写作工作台"的作品目录约定（大纲/ 设定/ 正文/ 记忆/ 技能/ 作品信息.md），并把其他小说工具习惯的写法（spec/ memory/ stories/ book.md 等）逐一对照过来。找不到 spec/ 或 stories/ 时**不要**判定作品为空——先用本表翻译路径。
+category: 其他
 allowed-tools: read_setting, read_memory, read_chapter
 ---
 

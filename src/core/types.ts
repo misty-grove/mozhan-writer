@@ -128,6 +128,11 @@ export interface Skill {
    */
   slug?: string
   description: string
+  /**
+   * 技能分类（outline/setting/gen/memory/style）。
+   * frontmatter 里可写；作者在面板里手动移动的优先级更高（见 core/skillCats.ts）。
+   */
+  category?: string
   allowedTools: string[]
   source: 'builtin' | 'work' | 'global'
   enabled: boolean

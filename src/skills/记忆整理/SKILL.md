@@ -2,6 +2,7 @@
 name: 记忆整理
 slug: memory-organize
 description: 当需要对某一章生成摘要、抽取伏笔、更新状态表与时间线，或给存量章节批量建立记忆库时使用。
+category: 记忆
 allowed-tools: read_chapter, read_setting, write_memory
 ---
 

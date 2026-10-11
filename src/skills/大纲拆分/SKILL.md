@@ -2,6 +2,7 @@
 name: 大纲拆分
 slug: outline-split
 description: 当要把一个模糊的想法、一句话梗概或某一卷的目标拆成可写的章节列表（章纲）时使用。产出大纲文本，交由作者确认后再落盘。
+category: 大纲
 allowed-tools: read_outline, read_memory, write_candidate
 ---
 

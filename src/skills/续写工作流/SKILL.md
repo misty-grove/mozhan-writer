@@ -2,6 +2,7 @@
 name: 续写工作流
 slug: continuation-flow
 description: 当需要为某一章继续写正文、补写下一章、或把章纲落成正文时使用。产出候选文本，绝不直接写入正文文件。
+category: 文本生成
 allowed-tools: read_outline, read_chapter, read_setting, read_memory, write_candidate
 ---
 

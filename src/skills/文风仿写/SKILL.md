@@ -2,6 +2,7 @@
 name: 文风仿写
 slug: style-imitate
 description: 当需要让产出贴近作者本人文风、或提供了一段参考文本要求"照这个味儿写"时使用。负责提取并应用文风指纹。
+category: 文风
 allowed-tools: read_chapter, search_text
 ---
 

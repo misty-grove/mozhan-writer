@@ -102,6 +102,7 @@ export function refreshDiff() {
 
 let persistTimer: any = null
 let persisting = false
+let inflight: Promise<boolean> | null = null
 
 function schedulePersist() {
   if (!sandbox.active) return
@@ -109,28 +110,46 @@ function schedulePersist() {
   persistTimer = setTimeout(() => void persistNow(), 500)
 }
 
-export async function persistNow(): Promise<boolean> {
-  if (!sandbox.active || persisting) return false
-  persisting = true
-  try {
-    const data: PersistedSandbox = {
-      v: 1,
-      savedAt: new Date().toISOString(),
-      roots: memAdapter.serializer(),
-      meta: {
-        name: sandbox.name,
-        origin: sandbox.origin,
-        importedAt: sandbox.importedAt,
-        lastExportAt: sandbox.lastExportAt,
-        baseline,
-        skipped: sandbox.skipped
-      }
+async function writeOnce(): Promise<boolean> {
+  const data: PersistedSandbox = {
+    v: 1,
+    savedAt: new Date().toISOString(),
+    roots: memAdapter.serializer(),
+    meta: {
+      name: sandbox.name,
+      origin: sandbox.origin,
+      importedAt: sandbox.importedAt,
+      lastExportAt: sandbox.lastExportAt,
+      baseline,
+      skipped: sandbox.skipped
     }
-    const ok = await saveSandbox(data)
-    sandbox.mirrored = ok
-    return ok
+  }
+  const ok = await saveSandbox(data)
+  sandbox.mirrored = ok
+  return ok
+}
+
+export async function persistNow(): Promise<boolean> {
+  if (!sandbox.active) return false
+  // 上一轮还没写完又来了新请求，不能直接放弃 —— 那是真会丢东西的：
+  // 典型场景是「刚点完导出」：exportSandbox 换掉了 baseline 然后调 persistNow，
+  // 可防抖那一轮（500ms 前被某次写盘触发）正在写，写进去的还是**旧基线**。
+  // 老代码在这里直接 `return false` 了事，于是镜像里留着旧基线，
+  // 作者刷新页面后顶栏又变回「沙盒 · 未导出 6」——明明刚导过，还被提醒「丢了找不回」。
+  // 所以这里是等那一轮写完、再补写一次（拿的是最新的 baseline），
+  // 而不是把它丢掉。并发写 IndexedDB 仍然只有一轮，没有破坏原来那个守卫。
+  if (persisting && inflight) {
+    await inflight
+    if (!sandbox.active) return false
+    return persistNow()
+  }
+  persisting = true
+  inflight = writeOnce()
+  try {
+    return await inflight
   } finally {
     persisting = false
+    inflight = null
   }
 }
 // 宿主每次写盘都回调；这里防抖 + 每次刷新差异，让计数始终是实的

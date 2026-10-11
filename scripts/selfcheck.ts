@@ -10,7 +10,21 @@ import { buildContextItems, contextTotal, renderContext } from '@/core/context'
 import { parseDoc, serializeDoc, updateMeta } from '@/core/frontmatter'
 import { countWords, diffLines } from '@/core/util'
 import { collectChapters, toMarkdown, toText, defaultExportOptions } from '@/core/exportDoc'
-import { builtinSkills, parseSkillFile } from '@/core/skills'
+import {
+  builtinSkills,
+  catOf,
+  clearCat,
+  hideSkill,
+  hiddenSkillNames,
+  mergeSkills,
+  moveCat,
+  parseSkillFile,
+  restoreSkill,
+  serializeSkill
+} from '@/core/skills'
+import * as sk2 from '@/core/skills'
+import { settings } from '@/core/settings'
+import * as cats from '@/core/skillCats'
 import { toDocxBlob } from '@/core/exportDoc'
 import * as codex from '@/core/codex'
 import * as links from '@/core/links'
@@ -2245,7 +2259,7 @@ async function main() {
     )
     check(
       'Agent 技能：slug 进 serializeSkill，往返不丢（编辑技能后再投递仍在）',
-      /slug: s\.slug/.test(skillSrc) && /'name', 'slug', 'description', 'allowed-tools'/.test(skillSrc)
+      /slug: s\.slug/.test(skillSrc) && /'name', 'slug', 'description', 'category', 'allowed-tools'/.test(skillSrc)
     )
     check(
       'Agent 技能：任务提示词点名布局技能（不点名 DSH 会猜名字，白烧一轮往返）',
@@ -2542,6 +2556,125 @@ async function main() {
       threw = true
     }
     check('设定生成：大纲目录不存在时列表会抛（所以面板里那层 try/catch 是必需的，不是装饰）', threw)
+  }
+
+  /* 58. 技能分类（大纲 / 设定 / 文本生成 / 记忆 / 文风）+ 移动 / 删除 / 隐藏
+
+     这节要盯的三件事：
+      1. **分类能自动分对** —— 接进 DSH 的五十来个技能里，跟写小说相关的只有十几个，
+         分类错了就等于把「PDF 表格提取」喂给续写模型，白烧 token。
+      2. **作者的手动移动永远赢** —— 作者亲手挪过的分类，任何启发式都不许再改回去。
+      3. **「删除」对全局技能是隐藏** —— `~/.dsh/skills` 不是本应用的目录，
+         删那里的文件等于替作者删他自己的东西，这条错了会真丢数据。 */
+  {
+    /* ---- 分类值归一化：AI 与 frontmatter 都会给中文，英文别名也要认 ---- */
+    check('技能分类：中英文别名都认（中文「文风」与英文 style 同归一档）', cats.normalizeCat('文风') === 'style' && cats.normalizeCat('style') === 'style')
+    check('技能分类：大小写与空格不敏感（模型爱输出 " Style "）', cats.normalizeCat('  Style ') === 'style')
+    check('技能分类：认不出的值返回 null（调用方兜到 other，不是硬塞一个错的）', cats.normalizeCat('乱写的') === null && cats.normalizeCat('') === null && cats.normalizeCat(undefined) === null)
+    check('技能分类：五个业务分类齐备，other 兜底', cats.SKILL_CAT_ORDER.slice(0, 5).join(',') === 'outline,setting,gen,memory,style' && cats.SKILL_CAT_ORDER[5] === 'other')
+    check('技能分类：五个分类都有中文名（界面上不给作者看英文 key）', cats.SKILL_CAT_ORDER.every((c) => !!cats.SKILL_CAT_LABEL[c]))
+
+    /* ---- 启发式：窄类别必须抢在宽类别前面 ---- */
+    // 这条样例里「文风」与「写作」同时出现：窄规则（style）必须抢在宽规则（gen）前面，
+    // 顺序一换结果就变 —— 所以这条闸门是真能红的（改过顺序验证过）。
+    check('⚠ 技能分类：文风仿写不被「写作」吞掉（宽规则排在后面）', cats.classifySkill({ name: '文风仿写', description: '写作时照作者的味道写' }) === 'style')
+    check('⚠ 技能分类：记忆摘要不被「写作」吞掉', cats.classifySkill({ name: '章节摘要', description: '生成摘要与伏笔台账' }) === 'memory')
+    check('⚠ 技能分类：大纲拆分进大纲类', cats.classifySkill({ name: '大纲拆分', description: '把梗概拆成章纲' }) === 'outline')
+    check('技能分类：人物设定进设定类', cats.classifySkill({ name: '人物卡', description: '生成角色设定' }) === 'setting')
+    check('技能分类：续写进文本生成类', cats.classifySkill({ name: '续写工作流', description: '接着上一章写正文' }) === 'gen')
+    check('技能分类：英文名也认（DSH 库里多是英文：continuation / style-imitation）', cats.classifySkill({ name: 'continuation', description: 'continue writing' }) === 'gen' && cats.classifySkill({ name: 'style-imitation', description: 'imitate the voice' }) === 'style')
+    check('⚠ 技能分类：跟写小说无关的落「其他」（PDF 提取不该混进续写上下文）', cats.classifySkill({ name: 'pdf', description: 'extract tables from pdf files' }) === 'other')
+    check('技能分类：描述为空也能按名字分（不少技能没写 description）', cats.classifySkill({ name: '大纲助手' }) === 'outline')
+    check('技能分类：frontmatter 显式分类优先于启发式', cats.classifySkill({ name: 'pdf', description: 'extract tables', category: '记忆' }) === 'memory')
+
+    /* ---- 内置技能：我们自己的六个，分类写死的，不许被启发式改 ---- */
+    const builtins = sk2.builtinSkills()
+    check('⚠ 技能分类：内置技能全部带显式分类（不靠猜）', builtins.length >= 6 && builtins.every((s) => !!s.category))
+    const bcat = (n: string) => builtins.find((s) => s.name === n)?.category
+    check('⚠ 技能分类：内置技能分类正确（大纲拆分=大纲 / 记忆整理=记忆 / 文风仿写=文风）', bcat('大纲拆分') === 'outline' && bcat('记忆整理') === 'memory' && bcat('文风仿写') === 'style')
+    check('技能分类：内置技能分类正确（续写工作流与一致性检查=文本生成）', bcat('续写工作流') === 'gen' && bcat('一致性检查') === 'gen')
+    check('技能分类：frontmatter 里写中文分类，读出来是规范 key（存两种写法迟早对不上）', builtins.every((s) => !/[一-龥]/.test(s.category || '')))
+
+    /* ---- 序列化往返：category 跟着文件走 ---- */
+    const round = sk2.parseSkillFile(
+      sk2.serializeSkill({ name: 'X', description: 'd', category: 'gen', allowedTools: [], content: 'body' }),
+      'work'
+    )
+    check('技能分类：category 随 SKILL.md 往返不丢（分类跟作品走，换台电脑还在）', round.category === 'gen')
+    const noCat = sk2.parseSkillFile('---\nname: Y\ndescription: d\n---\nbody', 'work')
+    check('技能分类：没写 category 的技能不硬塞一个（undefined 让启发式兜底）', noCat.category === undefined)
+
+    /* ---- 手动移动 > frontmatter > 启发式 ---- */
+    const demo: any = { id: 'w:x', name: '大纲拆分', slug: '', description: '拆章纲', category: 'outline', allowedTools: [], source: 'work', enabled: true, location: '技能/大纲拆分/SKILL.md', content: '' }
+    settings.skillCats = {}
+    check('技能分类：默认取 frontmatter 的分类', sk2.catOf(demo) === 'outline')
+    sk2.moveCat(demo, 'gen')
+    check('⚠ 技能分类：作者手动移动后，手动值赢过 frontmatter（不许被悄悄改回去）', sk2.catOf(demo) === 'gen' && settings.skillCats['大纲拆分'] === 'gen')
+    sk2.moveCat(demo, cats.classifySkill(demo))
+    check('⚠ 技能分类：挪回启发式分类时把覆盖清掉（否则那层覆盖永远压着，改 frontmatter 也没用）', !settings.skillCats['大纲拆分'])
+    sk2.moveCat(demo, 'style')
+    sk2.clearCat(demo.name)
+    check('技能分类：clearCat 撤掉手动分类（分类已写进文件时用，避免两层打架）', sk2.catOf(demo) === 'outline')
+
+    /* ---- 隐藏 = 全局/内置技能的「删除」，不碰文件 ---- */
+    settings.hiddenSkills = []
+    settings.skillCats = {}
+    sk2.hideSkill('pdf')
+    sk2.hideSkill('pdf') // 重复调用不该产生两条
+    check('技能分类：隐藏同一技能两次只记一条（否则恢复一次还有一条残留）', sk2.hiddenSkillNames().length === 1 && sk2.hiddenSkillNames()[0] === 'pdf')
+    sk2.restoreSkill('pdf')
+    check('技能分类：恢复后从隐藏名单里消失', sk2.hiddenSkillNames().length === 0)
+    sk2.hideSkill('pdf')
+    const merged = await sk2.mergeSkills(null)
+    check('⚠ 技能分类：被隐藏的技能不出现在合并结果里（也不喂给 AI 的技能目录）', !merged.some((s) => s.name === 'pdf'))
+    check('⚠ 技能分类：隐藏不动磁盘 —— 内置技能仍在（只是列表里没有）', builtins.length >= 6 && merged.length === builtins.filter((s) => s.name !== 'pdf').length)
+    settings.hiddenSkills = []
+
+    /* ---- AI 整理方案解析：容错，但不猜 ---- */
+    const known = ['大纲拆分', 'pdf', '记忆整理']
+    const fence = '好的，方案如下：\n```json\n[{"name":"pdf","category":"删除","reason":"跟写小说无关"},{"name":"大纲拆分","category":"大纲","reason":"本来就是"}]\n```'
+    const p1 = cats.parseOrganizePlan(fence, known)
+    check('⚠ 技能整理：剥掉代码围栏与客套话照样解析得出方案', p1.length === 2)
+    check('技能整理：「删除」被认成 delete（作者说删，就是删）', p1.find((i: any) => i.name === 'pdf')?.cat === 'delete')
+    check('技能整理：中文分类被洗成 key（模型输出中文是本分）', p1.find((i: any) => i.name === '大纲拆分')?.cat === 'outline')
+    check('⚠ 技能整理：编造的技能名一律丢弃（拿假名字去删目录会静默失败还以为删成了）', cats.parseOrganizePlan('[{"name":"不存在的技能","category":"删除"}]', known).length === 0)
+    check('技能整理：同名只留一条（模型重复输出时不重复动手）', cats.parseOrganizePlan('[{"name":"pdf","category":"删除"},{"name":"pdf","category":"记忆"}]', known).length === 1)
+    check('技能整理：忘了外层数组时按行兜底', cats.parseOrganizePlan('{"name":"pdf","category":"删除","reason":"无关"}\n{"name":"记忆整理","category":"记忆","reason":"本来就是"}', known).length === 2)
+    check('技能整理：认不出的分类值整条丢弃（宁可少做，不可做错）', cats.parseOrganizePlan('[{"name":"pdf","category":"乱写的"}]', known).length === 0)
+    check('技能整理：完全不是 JSON 时返回空（调用方据此把原文当回答摊给作者）', cats.parseOrganizePlan('我没找到能起名字的技能，建议新建一个。', known).length === 0)
+    check('技能整理：delete 的英文与大小写都认', cats.parseOrganizePlan('[{"name":"pdf","category":"DELETE"}]', known)[0]?.cat === 'delete')
+    const op = cats.organizePrompt([{ name: 'pdf', description: 'extract tables', category: 'other' }], '把无关的技能删掉')
+    check('⚠ 技能整理：提示词里带上全部技能名单与作者指令（「让 AI 自己去找」靠的就是这份名单）', op.includes('pdf') && op.includes('把无关的技能删掉') && op.includes('删除'))
+    check('技能整理：提示词要求技能名逐字照抄（不照抄就整批作废）', op.includes('必须与上面完全一致'))
+
+    /* ---- 面板：入口都在（静态） ---- */
+    const panel = readSrc('src/components/SkillPanel.vue')
+    check('⚠ 技能面板：五个分类页签 + 全部（作者不用翻列表找）', panel.includes('SKILL_CAT_ORDER') && panel.includes("cat = 'all'") && /class="chip"/.test(panel))
+    check('技能面板：每条技能有移动分类的下拉（独占一行 —— 挤进按钮行会被 flex 压到 0 宽切字）', panel.includes('onMoveCat') && panel.includes('cat-row') && panel.includes('class="cat-select"'))
+    check('⚠ 技能面板：作品内技能真删、全局/内置技能只隐藏（不删别人的文件）', /s\.source === 'work' && state\.ref/.test(panel) && panel.includes("sk.hideSkill(s.name)") && panel.includes('没有删除任何文件'))
+    check('技能面板：隐藏的技能能恢复（不是单向操作）', panel.includes('已隐藏的技能') && panel.includes('sk.restoreSkill(name)'))
+    check('⚠ 技能面板：AI 指令框存在（作者下指令，AI 出方案）', panel.includes('aiInstruction') && panel.includes('askOrganize') && panel.includes('让 AI 出方案'))
+    check('⚠ 技能面板：AI 方案必须人工勾选后才应用（跟所有 AI 功能同一条铁律）', panel.includes('planPicked') && panel.includes('applyPlan') && panel.includes('不会直接动手'))
+    check('技能面板：默认指令是「清掉无关技能」（作者最常做的第一件事，别从空白框开始想）', panel.includes('DEFAULT_INSTRUCTION') && panel.includes('把跟小说写作无关的技能都删掉'))
+    check('技能面板：AI 直接回答问题（没吐 JSON）时把话原样摊出来', panel.includes('aiAnswer') && panel.includes("!out.includes('[')"))
+    check('⚠ 技能面板：清理无关技能排除内置技能（内置是我们挑的，别让作者一键清掉自己认可的技能）', /catOf\(s\) === 'other' && s\.source !== 'builtin'/.test(panel))
+    check('技能面板：清理前先确认（一次动一批，必须摊名单）', panel.includes('清理无关技能') && panel.includes('askConfirm'))
+  }
+
+  /* 59. 沙盒镜像的落盘：并发时不能把「刚导出」这件事丢掉
+
+     作者实报的现象：沙盒里点完「导出全部」，顶栏变成「已同步」，
+     刷新页面后又变回「沙盒 · 未导出 6」—— 明明刚导过，还被提醒「丢了就找不回」。
+     根因在 persistNow 的并发守卫：上一轮还没写完时它直接 return false，
+     那一轮写进去的是**旧基线**，而调用方（exportSandbox 刚换完 baseline）以为存过了。
+     守卫生效的那一刻，这次改动就永久丢了 —— 而且只在「防抖那轮正好在写」时才发生，
+     所以是间歇性的，最容易在验收里被当成 flake 放过去。 */
+  {
+    const sbx = readSrc('src/stores/sandbox.ts')
+    check('⚠ 沙盒落盘：并发时不丢弃（等上一轮写完再补一轮，拿最新的 baseline）', /persisting && inflight/.test(sbx) && /await inflight/.test(sbx))
+    check('⚠ 沙盒落盘：不许再出现「正在存就直接 return」的丢弃路径', !/if \([^)]*persisting[^)]*\)\s*return/.test(sbx))
+    check('沙盒落盘：真正写 IndexedDB 的只有一轮（并发守卫还在）', sbx.includes('persisting = true') && sbx.includes('persisting = false') && sbx.includes('async function writeOnce'))
+    check('沙盒落盘：基线跟着导出一起进镜像（「已同步」刷新后才站得住）', sbx.includes('baseline,') && /baseline = fingerprints\(files\)/.test(sbx))
   }
 
   console.log(failures === 0 ? '\n全部通过 ✅' : `\n失败 ${failures} 项 ❌`)

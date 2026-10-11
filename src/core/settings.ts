@@ -97,6 +97,20 @@ export interface AppSettings {
   recent: RecentWork[]
   skillLibrary: { id: string; name: string } | null
   disabledSkills: string[]
+  /**
+   * 作者在技能面板里手动指定的分类（技能名 → 分类 key）。
+   * 优先级最高：覆盖 frontmatter 与关键词启发式（见 core/skillCats.ts）。
+   * 按名字存而不是按文件存，这样全局库/内置技能也能挪分类。
+   */
+  skillCats: Record<string, string>
+  /**
+   * 被作者「删除」的全局/内置技能名单。
+   *
+   * 为什么不真删：全局技能库指向的是 DSH 自己的 `~/.dsh/skills`，
+   * 那里面的技能 DSH 本体可能还要用 —— 应用没权利替作者删他自己的东西。
+   * 作品内技能（`技能/` 目录）是真删文件，不走这份名单。
+   */
+  hiddenSkills: string[]
 }
 
 const K = 'writer.settings.v1'
@@ -142,7 +156,9 @@ const defaults: AppSettings = {
   ui: { sidebarOpen: false, dockOpen: false, dockTab: 'context', showRecent: true, scale: 1, highContrast: false },
   recent: [],
   skillLibrary: null,
-  disabledSkills: []
+  disabledSkills: [],
+  skillCats: {},
+  hiddenSkills: []
 }
 
 /* ------------------------------ Key 混淆（非加密，仅防止明文肉眼可见） ------------------------------ */

@@ -8,7 +8,7 @@ import type { DirRef } from '@/platform'
 import { parseDoc, serializeDoc } from './frontmatter'
 import { settings } from './settings'
 import { DIRS } from './workspace'
-import { uid } from './util'
+import { classifySkill, normalizeCat, type SkillCat } from './skillCats'
 import type { Skill } from './types'
 
 const BUILTIN = import.meta.glob('../skills/*/SKILL.md', { query: '?raw', import: 'default', eager: true }) as Record<
@@ -28,6 +28,9 @@ export function parseSkillFile(raw: string, source: Skill['source'], location?: 
     name,
     slug: meta.slug ? String(meta.slug).trim() : undefined,
     description: String(meta.description || ''),
+    // frontmatter 里技能作者亲手写的分类。存**规范 key**（'文本生成' → 'gen'）而不是原串：
+    // 面板的分类下拉与 settings 里的手动分类都按 key 走，存两种写法迟早对不上。
+    category: normalizeCat(meta.category) || undefined,
     allowedTools: Array.isArray(meta['allowed-tools']) ? meta['allowed-tools'].map(String) : meta['allowed-tools'] ? [String(meta['allowed-tools'])] : [],
     source,
     enabled: !settings.disabledSkills.includes(name),
@@ -42,10 +45,11 @@ export function serializeSkill(s: Partial<Skill>): string {
       name: s.name,
       slug: s.slug,
       description: s.description,
+      category: s.category,
       'allowed-tools': s.allowedTools || []
     },
     s.content || '',
-    ['name', 'slug', 'description', 'allowed-tools']
+    ['name', 'slug', 'description', 'category', 'allowed-tools']
   )
 }
 
@@ -94,7 +98,48 @@ export async function mergeSkills(ref: DirRef | null): Promise<Skill[]> {
   for (const s of builtinSkills()) map.set(s.name, s)
   for (const s of await loadGlobalSkills(settings.skillLibrary)) map.set(s.name, s)
   if (ref) for (const s of await loadWorkSkills(ref)) map.set(s.name, s)
-  return [...map.values()].map((s) => ({ ...s, enabled: !settings.disabledSkills.includes(s.name) }))
+  const hidden = new Set(settings.hiddenSkills)
+  return [...map.values()]
+    .filter((s) => !hidden.has(s.name))
+    .map((s) => ({ ...s, enabled: !settings.disabledSkills.includes(s.name) }))
+}
+
+/* ------------------------------------------------------------------ 分类 / 隐藏 */
+
+/** 一条技能当前生效的分类：作者手挪 > frontmatter > 关键词启发式 */
+export function catOf(s: Skill): SkillCat {
+  const manual = normalizeCat(settings.skillCats?.[s.name])
+  if (manual) return manual
+  return classifySkill(s)
+}
+
+/** 作者把技能挪到另一个分类。挪回启发式分类时把 override 清掉，别留一层永远压着的旧值 */
+export function moveCat(s: Skill, cat: SkillCat) {
+  const map = { ...(settings.skillCats || {}) }
+  if (classifySkill(s) === cat) delete map[s.name]
+  else map[s.name] = cat
+  settings.skillCats = map
+}
+
+/** 撤掉手动分类（分类已经写进 SKILL.md 的 frontmatter 时用，避免两层互相打架） */
+export function clearCat(name: string) {
+  if (!settings.skillCats?.[name]) return
+  const map = { ...(settings.skillCats || {}) }
+  delete map[name]
+  settings.skillCats = map
+}
+
+/** 全局/内置技能的「删除」是隐藏：文件不动（那是 DSH 自己的目录），只是不再出现在列表与 AI 的技能目录里 */
+export function hideSkill(name: string) {
+  if (!settings.hiddenSkills.includes(name)) settings.hiddenSkills = [...settings.hiddenSkills, name]
+}
+
+export function restoreSkill(name: string) {
+  settings.hiddenSkills = settings.hiddenSkills.filter((n) => n !== name)
+}
+
+export function hiddenSkillNames(): string[] {
+  return [...settings.hiddenSkills]
 }
 
 export async function saveWorkSkill(ref: DirRef, skill: Skill) {

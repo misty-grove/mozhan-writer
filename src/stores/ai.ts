@@ -152,6 +152,20 @@ export async function testConnect() {
   return await layer.testConnection(cfg())
 }
 
+/**
+ * 不进候选区的裸对话：只给「技能整理」这类**结果由应用解析、再经人工确认**
+ * 的功能用。正文类生成必须走 `generate()`（产出要能预览、能删、能采纳）。
+ *
+ * 只支持直连 API：Agent 档的 DSH 会在任务里翻作品文件，对「整理技能名单」
+ * 这种纯文本任务纯属浪费步数；作者用 agent 档时提示他切 both/api。
+ */
+export async function rawChat(system: string, user: string): Promise<string> {
+  if (!apiReady()) {
+    throw new Error('技能整理走直连 API —— 请在设置里配好 API，或把引擎切到 both。')
+  }
+  return await layer.chat({ cfg: cfg(), messages: [{ role: 'system', content: system }, { role: 'user', content: user }] })
+}
+
 export interface GenerateArgs {
   mode: Candidate['mode']
   skill?: string

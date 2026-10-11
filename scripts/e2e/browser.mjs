@@ -344,6 +344,13 @@ try {
   // 万一焦点停在某个输入框上，Ctrl+3 这一下就落不进全局派发（视图根本不切，
   // `.graph` 永远不出现 —— 症状恰好是「节点数一直是 0」，看着像设定没加载，其实是没切过去）。
   await page.evaluate("document.body.focus(); return true")
+  // 先离开再回来：§5 那个循环已经进过一次关系图（那时设定库还是空的），
+  // 直接按 Ctrl+3 只是把已经挂载的那份重新显示出来，读不读得到新文件全看
+  // 谁先跑完 —— 于是这条四次里挂三次。而应用对作者的承诺是
+  // 「切回这个视图就该看见新条目」（GraphView 的 onMounted 里就是 ensureCodex(true)），
+  // 所以这里走「离开 → 回来」这条**设计好的路径**，让它变成确定的重挂载强制重读。
+  await page.pressKey('1', { ctrl: true })
+  await sleep(400)
   await page.pressKey('3', { ctrl: true })
   await page.waitFor("!!document.querySelector('.graph')", { timeout: 10000, label: '切到关系图视图' })
   await page.waitFor("document.querySelectorAll('.graph .node').length >= 2", { timeout: 10000, label: '关系图画出台子' })
@@ -2059,6 +2066,152 @@ try {
         await shot(page, '08b-settings-ai.png')
       }
     }
+  }
+
+  /* ---------- 7.17 技能分类：五类页签 · 移动 · 隐藏 · AI 整理指令框 ----------
+     作者的要求是「把技能分成大纲/设定/文本生成/记忆/文风五类，无关的全删，
+     再加一个让 AI 按指令整理的框、能移动和删除」。
+     这里不真发网络请求（那是 selfcheck 的提示词断言管的），只验**界面上这套真的能用**：
+       - 分类页签点得动，点完里面的条目是对的；
+       - 「移动」真的把技能挪到了另一类（不是下拉框变一下就完事）；
+       - 内置/全局技能的删除是**隐藏**，拦一道确认，且能恢复；
+       - AI 指令框在，默认已经替作者想好了第一句。
+     接着 7.16 的沙盒作品跑（此时 AI 层已开、右侧面板已开）。 */
+  section('7.17 技能分类：五类页签 · 移动 · 隐藏 · AI 指令框')
+  {
+    const hasSkillTab = await page.evaluate(
+      "return Array.from(document.querySelectorAll('.dock .tabs button')).some((b) => /技能/.test(b.textContent))"
+    )
+    check('技能页签常驻（技能是作者的提示词资产，不联网也要能管）', hasSkillTab)
+
+    if (hasSkillTab) {
+      await page.clickByText('.dock .tabs button', '技能')
+      await page.waitFor("document.querySelector('.sk')", { timeout: 8000, label: '技能面板' })
+      await sleep(400)
+
+      /* 分类页签 */
+      const chips = await page.evaluate("return Array.from(document.querySelectorAll('.sk .chip')).map((b) => b.textContent.trim())")
+      const flat = chips.join('|')
+      check('⚠ 分类页签齐了（全部 + 大纲/设定/文本生成/记忆/文风）',
+        /^全部/.test(chips[0] || '') && /大纲/.test(flat) && /设定/.test(flat) && /文本生成/.test(flat) && /记忆/.test(flat) && /文风/.test(flat),
+        chips.join(' / '))
+      check('页签上带数量（作者不用点进去数）', /\d/.test(flat), flat)
+
+      const rows = () => page.evaluate("return Array.from(document.querySelectorAll('.sk .list .item')).map((d) => (d.querySelector('.nm') || {}).textContent || '')")
+
+      /* 点「大纲」页签：里面应该只剩大纲类技能 */
+      await page.evaluate("const b = Array.from(document.querySelectorAll('.sk .chip')).find((x) => /大纲/.test(x.textContent)); b.click(); return true")
+      await sleep(400)
+      const outlineRows = await rows()
+      check('⚠ 点「大纲」页签，里面是「大纲拆分」（启发式没把它分错类）',
+        outlineRows.length === 1 && /大纲拆分/.test(outlineRows[0]), outlineRows.join(','))
+
+      /* 移动：把它挪到「设定」，它得真的从大纲页签消失、出现在设定页签 */
+      const moved = await page.evaluate(`
+        const sel = document.querySelector('.sk .list .item select')
+        if (!sel) return false
+        sel.value = 'setting'
+        sel.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      `)
+      check('每条技能都有移动分类的下拉', moved)
+      await sleep(600)
+      const afterMove = await rows()
+      check('⚠ 移动生效：挪到「设定」后从大纲页签消失（不是下拉框自嗨）', afterMove.length === 0, afterMove.join(','))
+
+      await page.evaluate("const b = Array.from(document.querySelectorAll('.sk .chip')).find((x) => /设定/.test(x.textContent)); b.click(); return true")
+      await sleep(500)
+      const settingRows = await rows()
+      check('⚠ 移动生效：它出现在「设定」页签里', settingRows.some((n) => /大纲拆分/.test(n)), settingRows.join(','))
+
+      /* 隐藏：内置/全局技能走隐藏（不删别人的文件），拦确认，且可恢复 */
+      await page.evaluate(`
+        const b = Array.from(document.querySelectorAll('.sk .list .item button')).find((x) => /隐藏|删除/.test(x.textContent.trim()))
+        if (!b) return false
+        b.click()
+        return true
+      `)
+      await sleep(500)
+      const dlgShown = await page.evaluate("return !!document.querySelector('.dlg')")
+      check('⚠ 隐藏/删除先拦一道应用内确认（不是 window.confirm，也不是直接动手）', dlgShown)
+      if (dlgShown) {
+        await page.evaluate("const b = Array.from(document.querySelectorAll('.dlg button')).find((x) => /隐藏|删除|确定|确认/.test(x.textContent)); if (b) b.click(); return true")
+        await sleep(600)
+      }
+      const hiddenBox = await page.evaluate("return (document.querySelector('.sk .hidden-box') || {}).innerText || ''")
+      check('⚠ 隐藏的技能进了「已隐藏的技能」，可恢复（不是单向操作）', /已隐藏的技能/.test(hiddenBox), hiddenBox.slice(0, 60))
+
+      if (/已隐藏的技能/.test(hiddenBox)) {
+        await page.evaluate("const d = document.querySelector('.sk .hidden-box'); if (!d.open) d.querySelector('summary').click(); return true")
+        await sleep(300)
+        const restored = await page.evaluate(`
+          const b = Array.from(document.querySelectorAll('.sk .hidden-box button')).find((x) => /恢复/.test(x.textContent))
+          if (!b) return false
+          b.click()
+          return true
+        `)
+        await sleep(600)
+        const stillHidden = await page.evaluate("return !!document.querySelector('.sk .hidden-box')")
+        check('恢复之后「已隐藏的技能」那一栏自己收起来', restored && !stillHidden)
+      }
+
+      /* AI 整理指令框 */
+      const aiBtn = await page.evaluate("return Array.from(document.querySelectorAll('.sk .ai-box button')).some((b) => /让 AI 整理技能/.test(b.textContent))")
+      check('⚠ 有「让 AI 整理技能」入口（作者下指令的框在这里）', aiBtn)
+      if (aiBtn) {
+        await page.evaluate("const b = Array.from(document.querySelectorAll('.sk .ai-box button')).find((x) => /让 AI 整理技能/.test(x.textContent)); b.click(); return true")
+        await sleep(400)
+        const box = await page.evaluate("return (document.querySelector('.sk .ai-box') || {}).innerText || ''")
+        check('打开后有指令输入框', await page.evaluate("return !!document.querySelector('.sk .ai-box textarea')"))
+        check('⚠ 默认指令已经替作者想好第一句（清掉无关技能）', /无关/.test(box), box.replace(/\s+/g, ' ').slice(0, 80))
+        check('⚠ 明说「方案出来后由你勾选确认，不会直接动手」', /勾选确认|不会直接动手/.test(box))
+        // 不点「让 AI 出方案」——那会真发网络请求，本节只验界面与本地行为
+      }
+
+      await shot(page, '08c-skill-cats.png')
+    }
+  }
+
+  /* ---------- 7.18 长正文不出稿纸（「白气泡」bug 的回归闸门） ----------
+     作者实报：AI 续写并采纳后，正文上浮着一块白色圆角「气泡」，跟着滚、能编辑、一直在。
+     根因：.editor-scroll 是定高 flex 容器，稿纸 .paper-col 作为唯一 item 被默认的
+     stretch 钉在容器高上，高度跟内容脱钩 —— 章节第一次超过一屏，ProseMirror 的内容
+     就从稿纸底下画出去，稿纸的圆角投影只裹住前几行，后面的字漂在桌面底色上。
+     修复是 .editor-scroll { align-items: flex-start }。这里灌 60 段让正文必然超一屏，
+     断言稿纸始终裹住全部正文。 */
+  section('7.18 长正文不出稿纸（白气泡 bug 回归闸门）')
+  {
+    // §7.15 建的沙盒作品可能还没有章，有起步入口就先建第一章
+    if (await page.evaluate("return !!document.querySelector('.blank-start')")) {
+      await page.evaluate(`
+        const i = document.querySelector('.blank-start input')
+        if (i) { i.focus(); i.select() }
+        const b = Array.from(document.querySelectorAll('.blank-start button')).find((x) => /新建第一章/.test(x.textContent))
+        if (b) b.click()
+        return true
+      `)
+      await sleep(1200)
+    }
+    const long = Array.from({ length: 60 }, (_, i) => `第${i + 1}段：这是长正文验收段，用来确认稿纸能裹住全部内容。`).join('\n\n')
+    await page.evaluate(`
+      const pm = document.querySelector('.paper .ProseMirror') || document.querySelector('.paper')
+      pm.focus()
+      document.execCommand('insertText', false, ${JSON.stringify(long)})
+      return true
+    `)
+    await sleep(900)
+    const m = await page.evaluate(`
+      const col = document.querySelector('.paper-col')
+      const paper = document.querySelector('.paper')
+      const sc = document.querySelector('.editor-scroll')
+      if (!col || !paper || !sc) return null
+      const cr = col.getBoundingClientRect()
+      const pr = paper.getBoundingClientRect()
+      return { colH: Math.round(cr.height), paperH: Math.round(pr.height), clientH: sc.clientHeight }
+    `)
+    check('⚠ 稿纸高度能跟着正文长（不是被 flex 钉在一屏高）', !!m && m.colH >= m.paperH - 2, JSON.stringify(m))
+    check('⚠ 正文超过一屏时稿纸也超过一屏（内容全部还在纸上）', !!m && m.colH > m.clientH, JSON.stringify(m))
+    await page.screenshot(join(SHOTS, '08d-long-body-paper.png'))
   }
 
   /* ---------- 8. 报错汇总 ---------- */
