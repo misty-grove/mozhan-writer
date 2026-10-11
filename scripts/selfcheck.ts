@@ -79,6 +79,31 @@ import { buildScaleWork } from './corpus'
 import { condenseOutline, parseSettingSheet, sanitizeName, settingGenPrompt } from '@/core/worldbuild'
 import { CN_PUNCT_RULE, normalizeDialogQuotes } from '@/core/quotes'
 import { parseStyleNotes, sanitizeSampleName, styleLearnPrompt } from '@/core/styleLearn'
+import {
+  descZhOf,
+  displayDesc,
+  displayName,
+  hasCJK,
+  humanizeName,
+  needsZh,
+  parseSkillZh,
+  pickNeedZh,
+  skillZhPrompt,
+  translated as skillTranslated,
+  zhOf
+} from '@/core/skillI18n'
+import {
+  TRANS_LANGS,
+  chunkCount,
+  detectLang,
+  isLang,
+  langLabel,
+  joinTranslated,
+  splitForTranslate,
+  translatedTitle,
+  translateSystem,
+  type LangCode
+} from '@/core/translate'
 
 /**
  * 读工程内的源文件（静态断言用）。
@@ -2737,6 +2762,106 @@ async function main() {
     check('⚠ AI 指令对话框：扩写没有选区时退化成本章最后一段，且说出来（静默换目标是 bug）', dlg.includes('将对**本章最后一段**') && dlg.includes('lastParagraph'))
     check('AI 指令对话框：不用原生 prompt / confirm', !/window\.(prompt|confirm)/.test(dlg))
     check('AI 指令对话框：产出先进候选区（跟所有 AI 功能同一条铁律）', dlg.includes('setDockTab') && dlg.includes("生成并放入候选区"))
+  }
+
+  /* 61. 技能列表中文化 · 全文翻译（中 / 英 / 日）
+
+     两件事的共同风险都是「AI 替作者做了他没让做的事」：
+       - 技能翻译只能改**显示**，一个 SKILL.md 都不能动（全局库是 DSH 自己的目录）；
+         AI 编一个名单外的技能名出来，作者会以为自己装了那个技能 → 解析时一律丢掉。
+       - 全文翻译的落点必须是「另起一章 / 存成文件」，**没有覆盖原文这条路**；
+         长文必须分块，且分块不许吃掉作者的字（这类 bug 最难发现：译文看着挺顺）。 */
+  {
+    /* ---- 技能列表中文化 ---- */
+    check('⚠ 已经是中文的技能名不送去翻（翻译不是改作者的命名）', !needsZh('大纲拆分') && !needsZh('目录对照表'))
+    check('纯英文技能名要翻', needsZh('continuation') && needsZh('long-memory'))
+    check('语言判定：日文先认假名（日文里全是汉字，先判汉字会被认成中文）', detectLang('彼は雨の中を歩いた。') === 'ja')
+    check('语言判定：中文', detectLang('他站在檐下，没动。') === 'zh')
+    check('语言判定：英文', detectLang('He stood under the eaves and did not move.') === 'en')
+    check('没译名时只把英文读顺一点，不编造含义', humanizeName('long-memory') === 'long memory')
+    check('有 CJK 就认作中文（不翻）', hasCJK('断点续写') && !hasCJK('continuation'))
+
+    settings.skillZh = {}
+    check('⚠ 没有译名时显示原名（不凭空造一个中文名）', displayName('continuation') === 'continuation')
+    settings.skillZh = { continuation: { zh: '断点续写', desc: '接前文继续写' } }
+    check('⚠ 有译名时显示中文', displayName('continuation') === '断点续写' && zhOf('continuation') === '断点续写')
+    check('有译述时显示译述', displayDesc('continuation', 'Continue from where it stopped.') === '接前文继续写')
+    check('⚠ 译名只改显示：原文一个字没动（descZhOf 是译文，不是替换）', descZhOf('continuation') === '接前文继续写')
+    check('已翻标记（界面上用来决定要不要标「译」）', skillTranslated('continuation') && !skillTranslated('大纲拆分'))
+    settings.skillZh = {}
+
+    const zp = skillZhPrompt([{ name: 'continuation', slug: 'continuation', description: 'Continue the story.' }], '译名要短')
+    check('⚠ 技能翻译提示词：带上原名 / slug / 说明与作者指令', zp.includes('continuation') && zp.includes('Continue the story.') && zp.includes('译名要短'))
+    check('⚠ 技能翻译提示词：要求「按它实际干什么翻」，不要逐词直译', zp.includes('不要逐词直译'))
+    check('⚠ 技能翻译提示词：不许自己加名单外的技能', zp.includes('名单里没有的技能不要自己加'))
+
+    const zhOut = 'continuation|断点续写|接前文继续写\nlong-memory|长期记忆|维护跨章设定\n不存在的技能|瞎编|不许要\n'
+    const parsed = parseSkillZh(zhOut, ['continuation', 'long-memory'])
+    check('⚠ 译名解析：按行读三列', parsed.length === 2 && parsed[0].zh === '断点续写' && parsed[0].desc === '接前文继续写')
+    check('⚠ 译名解析：名单外的技能一律丢掉（模型编名字 → 作者以为自己装了它）',
+      !parsed.some((p) => p.name === '不存在的技能'))
+    check('译名解析：全角竖线也认', parseSkillZh('continuation｜断点续写｜接前文继续写', ['continuation'])[0]?.zh === '断点续写')
+    check('译名解析：跳过代码围栏与表头',
+      parseSkillZh('```\n原名|译名|译述\ncontinuation|断点续写|接前文继续写\n```', ['continuation'])[0]?.zh === '断点续写')
+    check('译名解析：译名为空的行跳过（留着英文原名比写个空名强）', parseSkillZh('continuation||', ['continuation']).length === 0)
+    check('⚠ 只挑需要翻的送去翻（中文技能不进名单，省钱也不改坏命名）',
+      pickNeedZh([
+        { name: 'continuation', description: 'Continue it.' },
+        { name: '大纲拆分', description: '把想法拆成章节。' }
+      ]).length === 1)
+
+    const sp2 = readSrc('src/components/SkillPanel.vue')
+    // 锚点要认「写入」那一处（注释里也写了翻译相关的话），且不许出现写 SKILL.md 的落盘动作
+    check('⚠ 技能译名只写本机 settings，不动任何技能文件', sp2.includes('setSkillZh(picked)') && !/saveWorkSkill[^\n]*zh/.test(sp2))
+    check('⚠ 译名要人工勾选才生效（不确认不动盘）', sp2.includes('应用所选') && sp2.includes('zhPicked.size'))
+
+    /* ---- 全文翻译 ---- */
+    check('⚠ 只有三国语言（作者只要中英日，不做二十种语言的下拉）',
+      TRANS_LANGS.length === 3 && TRANS_LANGS.map((l) => l.k).join(',') === 'zh,en,ja')
+    check('语言标签：中文 / English / 日本語', langLabel('zh') === '中文' && langLabel('en') === 'English' && langLabel('ja') === '日本語')
+    check('语言白名单（界面上不许冒出第四种）', isLang('zh') && isLang('en') && isLang('ja') && !isLang('ko'))
+
+    const paras = Array.from({ length: 40 }, (_, i) => `第${i + 1}段：雨下了整夜，他站在檐下没有动。`)
+    const long = paras.join('\n\n')
+    const chunks = splitForTranslate(long, 300)
+    check('⚠ 长文会分块（整章一次发过去必然被截断）', chunks.length > 1, `${chunks.length} 块`)
+    // 每一段都完整地落在某一块里 —— 这是最要紧的一条：
+    // 分块吃掉一整段，译文看着照样通顺，作者根本发现不了。
+    const allText = chunks.map((c) => c.text).join('\n\n')
+    check('⚠ 分块吃掉作者的字是最难发现的 bug：每一段都完整地在某一块里',
+      paras.every((p) => chunks.some((c) => c.text.includes(p))), `${chunks.length} 块`)
+    check('分块不凭空造字（块里的字全是原文里的）', allText.includes(paras[0]) && allText.includes(paras[39]))
+    check('⚠ 段落不被切开：切点只在段与段之间（sep 是 \\n\\n）',
+      chunks.slice(1).every((c) => c.sep === '\n\n'), chunks.slice(1).map((c) => c.sep).join(','))
+    check('⚠ 拼回来按 sep 接，分段不会被悄悄改（一段还是一段）',
+      joinTranslated(chunks.map((c) => c.text), chunks) === long)
+    check('空文本不产生空块（别拿空字符串去调 API）', splitForTranslate('', 300).length === 0 && splitForTranslate('   \n\n  ', 300).length === 0)
+    check('块数可预估（开翻之前先报代价）', chunkCount(long, 300) === chunks.length)
+    // 单段超过上限时才按句切，且仍标记为「同一段」（sep = '\n'），不拆成两段
+    const huge = '他说了一句话。'.repeat(200)
+    const hc = splitForTranslate(huge, 100)
+    check('⚠ 超长段按句切，且仍算同一段（sep 用 \\n，不把一段拆成几段）',
+      hc.length > 1 && hc.slice(1).every((c) => c.sep === '\n'), `${hc.length} 块`)
+
+    const sysZh = translateSystem('zh', { keepNames: true })
+    const sysEn = translateSystem('en', { keepNames: true })
+    check('⚠ 目标是中文才带中文标点规范（翻成英文还要求中文引号就是自找麻烦）',
+      sysZh.includes('人物对话一律用中文双引号') && !sysEn.includes('人物对话一律用中文双引号'))
+    check('⚠ 翻译提示词：只输出译文，不要解释/开场白/标题', sysZh.includes('只输出译文') && sysZh.includes('不要「以下是译文」这类开场白'))
+    check('⚠ 翻译提示词：人名地名保留原文（不音译、不另起名）', sysZh.includes('保留原文写法') && sysZh.includes('不要音译'))
+    check('翻译提示词：术语对照原样带上', translateSystem('en', { glossary: '林越 = Lin Yue' }).includes('林越 = Lin Yue'))
+    check('⚠ 译文标题带语言标记（作者一眼知道这一章是哪一版）', translatedTitle('第1章 雨夜', 'en') === '第1章 雨夜（English）')
+
+    const ts = readSrc('src/stores/translate.ts')
+    check('⚠ 译文进候选区（AI 产出先进候选区，作者点了采纳才落盘）', ts.includes("mode: 'translate'") && ts.includes('aiState.candidates.unshift'))
+    check('⚠ 翻译不许覆盖原文：没有 setContent / 替换正文这条路', !/setContent|replaceSelection|writeFile\(/.test(ts))
+    check('⚠ 失败要说出来（不能给一份「看着完整、中间夹着原文」的译文）', ts.includes('failed.push') && ts.includes('res.done.length'))
+    check('⚠ 中途能停（翻译跑很久，停不下来作者会以为软件卡死）', ts.includes('abort?.abort') && ts.includes('signal'))
+
+    const td = readSrc('src/components/TranslateDialog.vue')
+    check('⚠ 翻译对话框：先报代价再动手（多少字 / 分几块）', td.includes('分 ') && td.includes('estimate.chunks'))
+    check('⚠ 翻译对话框：没有「替换本章」这个选项（译错了还能救，覆盖错了救不回来）', !/替换本章|覆盖本章/.test(td))
+    check('⚠ 译文落点是「存为新章节」，不是改原章', readSrc('src/components/CandidatePanel.vue').includes('addChapterWithBody'))
   }
 
   console.log(failures === 0 ? '\n全部通过 ✅' : `\n失败 ${failures} 项 ❌`)

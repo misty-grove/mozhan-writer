@@ -160,7 +160,8 @@ export interface Candidate {
   skill?: string
   createdAt: string
   /** `style` = 文风学习：AI 从作者给的样本里归纳出的文风要点，采纳后写进 记忆/文风要点.md */
-  mode: 'continue' | 'rewrite' | 'expand' | 'shrink' | 'tone' | 'summary' | 'outline' | 'generate' | 'fix' | 'setting' | 'style'
+  /** `translate` = 译文：落点是「存为新章节 / 存为 md」，不覆盖作者原文 */
+  mode: 'continue' | 'rewrite' | 'expand' | 'shrink' | 'tone' | 'summary' | 'outline' | 'generate' | 'fix' | 'setting' | 'style' | 'translate'
   targetChapterId?: string
   applied?: boolean
   tokens?: number

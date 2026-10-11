@@ -24,14 +24,20 @@ createApp(App).use(createPinia()).mount('#app')
 // 正式出包（`npm run build`）两个条件都不满足，产物里没有这一段。
 const e2eHook = import.meta.env.DEV || import.meta.env.VITE_E2E === '1'
 if (e2eHook) {
-  Promise.all([import('./stores/ai'), import('./stores/workspace'), import('./stores/editor')]).then(
-    ([ai, ws, editor]) => {
-      ;(window as any).__writerDev = {
-        aiState: ai.aiState,
-        openWork: ws.openWork,
-        closeWork: ws.closeWork,
-        editorState: editor.editorState
-      }
+  Promise.all([
+    import('./stores/ai'),
+    import('./stores/workspace'),
+    import('./stores/editor'),
+    import('./core/settings')
+  ]).then(([ai, ws, editor, cfg]) => {
+    ;(window as any).__writerDev = {
+      aiState: ai.aiState,
+      openWork: ws.openWork,
+      closeWork: ws.closeWork,
+      editorState: editor.editorState,
+      // e2e 要验「技能名显示中文」这类**纯显示层**的东西：写 localStorage 得刷新页面才生效，
+      // 直接改这个 reactive 对象当帧就生效（settings 的写入是防抖的，改完会自动存）。
+      settings: cfg.settings
     }
-  )
+  })
 }

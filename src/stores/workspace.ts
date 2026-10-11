@@ -351,6 +351,22 @@ export async function newChapter(volumeId: string | null, title: string) {
   await selectChapter(ch.id)
 }
 
+/**
+ * 建一章并直接写入正文（译文落成新章节时走这条）。
+ *
+ * 为什么不「先建空章再让编辑器写」：那要依赖编辑器已经挂载、applyApi 就绪，
+ * 而译文是从候选区落的 —— 那时作者看的是候选区，编辑器那一侧未必就绪。
+ * 直接写文件 + refresh + 重新选中，镜像与磁盘一起到位。
+ */
+export async function addChapterWithBody(volumeId: string | null, title: string, body: string) {
+  if (!state.ref) return null
+  const ch = await ws.createChapter(state.ref, volumeId, title)
+  await ws.saveChapter(state.ref, ch.id, body)
+  await refresh(false)
+  await selectChapter(ch.id)
+  return ch
+}
+
 export async function newVolume(name: string) {
   if (!state.ref) return
   await ws.createVolume(state.ref, name)

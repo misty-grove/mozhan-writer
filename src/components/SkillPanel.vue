@@ -16,6 +16,17 @@ import {
   type OrganizeItem,
   type SkillCat
 } from '@/core/skillCats'
+import {
+  descZhOf,
+  displayDesc,
+  displayName,
+  parseSkillZh,
+  pickNeedZh,
+  setSkillZh,
+  skillZhPrompt,
+  zhOf,
+  type ParsedZh
+} from '@/core/skillI18n'
 import type { Skill } from '@/core/types'
 
 // 移动端没有目录选择器：靠选文件夹导入技能的入口在那里用不了，直接不显示，
@@ -40,7 +51,8 @@ const catOf = (s: Skill) => sk.catOf(s)
 const list = computed(() =>
   aiState.skills
     .filter((s) => (cat.value === 'all' ? true : catOf(s) === cat.value))
-    .filter((s) => !filter.value || s.name.includes(filter.value) || s.description.includes(filter.value))
+    // 搜索要同时认中文译名：作者记住的是「断点续写」，不是 continuation
+    .filter((s) => !filter.value || s.name.includes(filter.value) || displayName(s.name).includes(filter.value) || s.description.includes(filter.value) || displayDesc(s.name, s.description).includes(filter.value))
     .slice()
     .sort((a, b) => SKILL_CAT_ORDER.indexOf(catOf(a)) - SKILL_CAT_ORDER.indexOf(catOf(b)) || a.name.localeCompare(b.name))
 )
@@ -394,6 +406,76 @@ async function applyPlan() {
   if (hidden) bits.push(`隐藏 ${hidden} 个（全局/内置技能不动文件）`)
   notice.value = `整理完成：${bits.join('，')}`
 }
+
+/* ------------------------------------------------------------------ AI 翻译 *
+ * 技能库里大半是英文技能（DSH 那 50 来个尤其如此），作者看着一堆
+ * `continuation` / `long-memory` 不知道是干什么的。让 AI 翻成中文，
+ * 但**只改显示**：译名存本机 settings，一个 SKILL.md 都不动 ——
+ * 全局技能库是 DSH 自己的目录，应用没权利替作者改他自己的文件。
+ *
+ * 和整理功能同一条铁律：AI 出的译名先摊开给人勾选，确认了才写。
+ */
+
+const zhOpen = ref(false)
+const zhBusy = ref(false)
+const zhInstruction = ref('')
+const zhList = ref<ParsedZh[]>([])
+const zhPicked = ref<Set<string>>(new Set())
+
+/** 需要翻的那批（已经是中文的技能不送去翻：省钱，也不会把作者自己的命名改坏） */
+const needZh = computed(() => pickNeedZh(aiState.skills.map((s) => ({ name: s.name, slug: s.slug, description: s.description }))))
+
+/** 默认指令：作者要的就是「看得懂」，别让人从空白框开始想 */
+const DEFAULT_ZH_INSTRUCTION = '译名要短、要能一眼看出这个技能是干什么的；看不出用途的就按字面直译。'
+
+function openZh() {
+  zhOpen.value = !zhOpen.value
+  if (zhOpen.value && !zhInstruction.value.trim()) zhInstruction.value = DEFAULT_ZH_INSTRUCTION
+}
+
+async function askZh() {
+  if (!needZh.value.length) {
+    notice.value = '没有需要翻译的技能（名字和说明都已经是中文了）。'
+    return
+  }
+  zhBusy.value = true
+  notice.value = ''
+  try {
+    const out = await rawChat(
+      '你是写作软件的技能翻译助手。只输出「原名|译名|译述」这类三列文本，不要输出别的话。',
+      skillZhPrompt(needZh.value, zhInstruction.value)
+    )
+    const items = parseSkillZh(out, needZh.value.map((s) => s.name))
+    if (!items.length) {
+      zhList.value = []
+      notice.value = 'AI 没有给出可用的译名（它可能直接回答了一段话，而不是按格式输出）。'
+      return
+    }
+    zhList.value = items
+    zhPicked.value = new Set(items.map((i) => i.name))
+  } catch (e: any) {
+    notice.value = `翻译失败：${e?.message || e}`
+  } finally {
+    zhBusy.value = false
+  }
+}
+
+function toggleZhPick(name: string, on: boolean) {
+  const next = new Set(zhPicked.value)
+  if (on) next.add(name)
+  else next.delete(name)
+  zhPicked.value = next
+}
+
+/** 应用勾选的译名：只写本机 settings，不动任何 SKILL.md */
+function applyZh() {
+  const picked = zhList.value.filter((i) => zhPicked.value.has(i.name))
+  if (!picked.length) return
+  setSkillZh(picked)
+  zhList.value = []
+  zhPicked.value = new Set()
+  notice.value = `已译 ${picked.length} 个技能名（只改显示，没动任何技能文件）`
+}
 </script>
 
 <template>
@@ -483,6 +565,56 @@ async function applyPlan() {
     </div>
     <p v-else class="small dim">AI 整理需要在设置里配置 API（直连或 both 档）。</p>
 
+    <!-- AI 翻译：把英文技能名/说明翻成中文。只改显示，不动任何 SKILL.md -->
+    <div v-if="canOrganize" class="ai-box">
+      <div class="spread">
+        <button class="text small" @click="openZh">
+          {{ zhOpen ? '收起 AI 翻译' : `✦ 让 AI 翻译技能名${needZh.length ? `（${needZh.length} 个是英文）` : ''}` }}
+        </button>
+        <span class="dim small">只改界面显示，不动技能文件</span>
+      </div>
+      <div v-if="zhOpen" class="col">
+        <textarea
+          v-model="zhInstruction"
+          rows="2"
+          placeholder="告诉 AI 你想怎么翻。例如：译名要短，按它实际干什么翻，不要逐词直译"
+        ></textarea>
+        <div class="row">
+          <button class="primary small" :disabled="zhBusy || !needZh.length" @click="askZh">
+            {{ zhBusy ? '翻译中…' : `让 AI 出译名（${needZh.length}）` }}
+          </button>
+          <span class="dim small">译名出来后由你勾选，确认才生效</span>
+        </div>
+
+        <div v-if="zhList.length" class="plan">
+          <div class="spread">
+            <b class="small">译名（{{ zhList.length }} 条）</b>
+            <span class="row">
+              <button class="text small" @click="zhPicked = new Set(zhList.map((i) => i.name))">全选</button>
+              <button class="text small" @click="zhPicked = new Set()">全不选</button>
+            </span>
+          </div>
+          <label v-for="it in zhList" :key="it.name" class="plan-row small">
+            <input
+              type="checkbox"
+              style="width: auto"
+              :checked="zhPicked.has(it.name)"
+              @change="toggleZhPick(it.name, ($event.target as any).checked)"
+            />
+            <b class="nm">{{ it.zh }}</b>
+            <span class="dim mono">{{ it.name }}</span>
+            <span class="dim reason">{{ it.desc }}</span>
+          </label>
+          <div class="row">
+            <button class="primary small" :disabled="!zhPicked.size" @click="applyZh">
+              应用所选（{{ zhPicked.size }}）
+            </button>
+            <button class="text small" @click="zhList = []">放弃</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div v-if="editing" class="panel edit">
       <div class="row">
         <input v-model="editing.name" placeholder="技能名（唯一标识）" />
@@ -529,7 +661,9 @@ async function applyPlan() {
         <div class="spread">
           <div class="row">
             <input type="checkbox" :checked="s.enabled" style="width: auto" @change="toggle(s, ($event.target as any).checked)" />
-            <b class="nm">{{ s.name }}</b>
+            <!-- 有译名就显示中文，原名缩在后面那个小标签里：作者随时能对着原名去搜索/对照 -->
+            <b class="nm">{{ displayName(s.name) }}</b>
+            <span v-if="zhOf(s.name)" class="tag small dim mono" :title="`原名（AI 译）：${s.name}`">{{ s.name }}</span>
             <span class="tag small">{{ s.source === 'builtin' ? '内置' : s.source === 'work' ? '作品内' : '全局' }}</span>
             <span class="tag small info">{{ SKILL_CAT_LABEL[catOf(s)] }}</span>
             <span v-if="s.slug" class="tag small mono" :title="`给外部 Agent（DSH）用的英文标识：投递时目录名是 mozhan-${s.slug}-*`">{{ s.slug }}</span>
@@ -540,7 +674,9 @@ async function applyPlan() {
             <button class="text small danger-text" @click="remove(s)">{{ s.source === 'work' ? '删除' : '隐藏' }}</button>
           </div>
         </div>
-        <div class="small dim">{{ s.description || '（无描述：AI 不会自动判断何时用它）' }}</div>
+        <div class="small dim" :title="descZhOf(s.name) ? `原文：${s.description}` : ''">
+          {{ displayDesc(s.name, s.description) || '（无描述：AI 不会自动判断何时用它）' }}
+        </div>
         <!-- 移动分类单独占一行：跟「编辑/导出/删除」挤在同一行时，flex 会把它压到 0 宽，
              「文本生成」四个字直接被切没（§7.14 全界面扫描抓到的）。 -->
         <div class="row small cat-row">

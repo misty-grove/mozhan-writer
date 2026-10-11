@@ -111,6 +111,14 @@ export interface AppSettings {
    * 作品内技能（`技能/` 目录）是真删文件，不走这份名单。
    */
   hiddenSkills: string[]
+  /**
+   * 技能名/说明的中文译名（技能名 → 译文）。
+   *
+   * 为什么只存在本机而不写进 SKILL.md：全局技能库指向的是 DSH 自己的
+   * `~/.dsh/skills`，那里的文件不属于本应用；内置技能是打进包里的。
+   * 译名只是**显示层**，一个字节都不该动别人的文件（见 core/skillI18n.ts）。
+   */
+  skillZh: Record<string, { zh?: string; desc?: string }>
 }
 
 const K = 'writer.settings.v1'
@@ -158,7 +166,8 @@ const defaults: AppSettings = {
   skillLibrary: null,
   disabledSkills: [],
   skillCats: {},
-  hiddenSkills: []
+  hiddenSkills: [],
+  skillZh: {}
 }
 
 /* ------------------------------ Key 混淆（非加密，仅防止明文肉眼可见） ------------------------------ */

@@ -6,10 +6,13 @@ import { currentChapter, saveNow, state } from '@/stores/workspace'
 import { selectedText, setDockTab } from '@/stores/editor'
 import { estimateTokens } from '@/core/util'
 import AiPromptDialog from './AiPromptDialog.vue'
+import TranslateDialog from './TranslateDialog.vue'
 
 const openId = ref('')
 /** 两行输入框写不下的时候，走这个对话框（模式 + 大指令框 + 目标字数） */
 const showAi = ref(false)
+/** 翻译是另一种任务：不装配上下文，只吃原文 */
+const showTrans = ref(false)
 const instruction = ref('')
 const candidates = ref(2)
 const mode = ref<'continue' | 'rewrite' | 'expand' | 'shrink' | 'tone' | 'generate' | 'fix'>('continue')
@@ -143,6 +146,9 @@ async function run() {
           <button class="text small nowrap" title="打开大指令框：写清楚要什么、扩多少字" @click="showAi = true">
             详细指令…
           </button>
+          <button class="text small nowrap" title="把正文翻译成 中文 / English / 日本語" @click="showTrans = true">
+            翻译…
+          </button>
           <button v-if="aiState.generating" @click="cancelGenerate">停止</button>
         </div>
         <div v-if="tip" class="small warn-text">{{ tip }}</div>
@@ -153,6 +159,7 @@ async function run() {
     </template>
 
     <AiPromptDialog v-if="showAi" @close="showAi = false" />
+    <TranslateDialog v-if="showTrans" @close="showTrans = false" />
   </div>
 </template>
 

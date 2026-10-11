@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import fs from '@/platform'
 import { aiState, adoptStyleNotes, adoptSummary, appendToChapter, clearCandidates, enabled, removeCandidate } from '@/stores/ai'
 import { applyApi, editorState } from '@/stores/editor'
-import { currentChapter, state } from '@/stores/workspace'
+import { addChapterWithBody, currentChapter, state } from '@/stores/workspace'
 import { askConfirm } from '@/stores/dialog'
 import { download } from '@/core/exportDoc'
 import { countWords } from '@/core/util'
@@ -12,10 +12,13 @@ import { parseSettingSheet } from '@/core/worldbuild'
 import { defaultBody } from '@/core/codex'
 import { addEntry, codexState, refreshCodex } from '@/stores/codex'
 import AiPromptDialog from './AiPromptDialog.vue'
+import TranslateDialog from './TranslateDialog.vue'
 
 const openId = ref('')
 /** 从候选区直接下指令（生成 / 扩写都走同一个对话框） */
 const showAi = ref(false)
+/** 翻译入口也放一个：翻完回到候选区，作者正好在这里处理译文 */
+const showTrans = ref(false)
 /** 纠错候选的「改动说明」当前展开的是哪一张 */
 const openNotesId = ref('')
 /** 采纳失败的原因。桌面壳与部分 WebView 会禁掉原生 alert，反馈只能落在自己身上 */
@@ -210,6 +213,32 @@ async function adoptStyle(c: any) {
   notice.value = ok ? '' : '这份要点是空的，没能写入。'
 }
 
+/**
+ * 译文落成新的一章。
+ *
+ * 刻意不给「替换本章」：翻译错了还能改，覆盖错了就找不回来了（正文只有一份，
+ * 快照虽然能救但作者不一定记得去翻）。所以译文一律**另起一章**，
+ * 章名带语言标记，原章原样留着。
+ */
+async function saveAsChapter(c: any) {
+  if (!state.ref) {
+    notice.value = '当前没有打开的作品。'
+    return
+  }
+  if (!c.text?.trim()) {
+    notice.value = '这份译文是空的。'
+    return
+  }
+  const base = (c.title || '').replace(/ · .*译文$/, '').trim() || '译文'
+  try {
+    await addChapterWithBody(null, base, c.text)
+    c.applied = true
+    notice.value = ''
+  } catch (e: any) {
+    notice.value = `存为新章节失败：${e?.message || e}`
+  }
+}
+
 function copyText(c: any) {
   navigator.clipboard?.writeText(c.text)
 }
@@ -241,6 +270,12 @@ function saveFile(c: any) {
         ＋ 让 AI 写 / 扩写…
       </button>
       <span class="small dim">会先说清「动哪一段」，再让你写要求</span>
+    </div>
+    <div class="row">
+      <button class="text small" title="把正文翻译成 中文 / English / 日本語" @click="showTrans = true">
+        翻译正文…
+      </button>
+      <span class="small dim">译文也进候选区，不动原文</span>
     </div>
 
     <!-- Agent 的「过程」：读了哪些文件、调到哪一步。这是 Agent 档与直连 API 最大的体验差别 —— 
@@ -295,6 +330,7 @@ function saveFile(c: any) {
         <button v-else-if="c.mode === 'outline'" class="primary" @click="adoptOutline(c)">写入大纲文件</button>
         <button v-else-if="c.mode === 'setting'" class="primary" @click="adoptSetting(c)">写入设定库</button>
         <button v-else-if="c.mode === 'style'" class="primary" @click="adoptStyle(c)">写入 记忆/文风要点.md</button>
+        <button v-else-if="c.mode === 'translate'" class="primary" @click="saveAsChapter(c)">存为新章节</button>
         <template v-else>
           <button class="primary" @click="adopt(c)">{{ adoptLabel(c) }}</button>
           <button @click="copyText(c)">复制</button>
@@ -305,6 +341,7 @@ function saveFile(c: any) {
     </div>
 
     <AiPromptDialog v-if="showAi" @close="showAi = false" />
+    <TranslateDialog v-if="showTrans" @close="showTrans = false" />
   </div>
 </template>
 

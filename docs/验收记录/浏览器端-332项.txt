@@ -1,0 +1,441 @@
+
+> mozhan@0.1.0 e2e
+> node scripts/e2e/run.mjs
+
+▶ 构建产物…
+[36mvite v6.4.4 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 401 modules transformed.
+rendering chunks...
+[33m[plugin vite:reporter] 
+(!) F:/AI_Write_App/source/writer-app/src/core/settings.ts is dynamically imported by F:/AI_Write_App/source/writer-app/src/main.ts but also statically imported by F:/AI_Write_App/source/writer-app/src/App.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/BackupDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/CodexPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ContextPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/EditorPane.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/MobileBar.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/OutlineDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/RightDock.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SettingsDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SkillPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/StatsPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/StylePanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/TopBar.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/core/skillI18n.ts, F:/AI_Write_App/source/writer-app/src/core/skills.ts, F:/AI_Write_App/source/writer-app/src/stores/ai.ts, F:/AI_Write_App/source/writer-app/src/stores/translate.ts, F:/AI_Write_App/source/writer-app/src/stores/workspace.ts, F:/AI_Write_App/source/writer-app/src/views/HomeView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/StatsView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/WriteView.vue?vue&type=script&setup=true&lang.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[plugin vite:reporter] 
+(!) F:/AI_Write_App/source/writer-app/src/stores/editor.ts is dynamically imported by F:/AI_Write_App/source/writer-app/src/main.ts but also statically imported by F:/AI_Write_App/source/writer-app/src/components/AiPromptDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/AssetPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/CandidatePanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ChapterTree.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/CheckPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/CodexPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ContextPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/EditorPane.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/MemoryPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/MobileBar.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/OutlineDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ReferencePane.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/RightDock.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SearchPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SettingsDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SnapshotDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/StylePanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/TopBar.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/TranslateDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/stores/ai.ts, F:/AI_Write_App/source/writer-app/src/stores/workspace.ts, F:/AI_Write_App/source/writer-app/src/views/BoardView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/GraphView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/TimelineView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/WriteView.vue?vue&type=script&setup=true&lang.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[plugin vite:reporter] 
+(!) F:/AI_Write_App/source/writer-app/src/stores/workspace.ts is dynamically imported by F:/AI_Write_App/source/writer-app/src/main.ts but also statically imported by F:/AI_Write_App/source/writer-app/src/App.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/AiPromptDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/AssetPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/BackupDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/CandidatePanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ChapterCard.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ChapterTree.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/CheckPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/CodexPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ContextPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/EditorPane.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ExportDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ForeshadowPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ImportDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ImportOutlineDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/MemoryPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/MobileBar.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/OutlineDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ReferencePane.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SandboxDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SearchPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SettingsDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SkillPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SnapshotDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/StatsPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/StylePanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/TopBar.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/TranslateDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/main.ts, F:/AI_Write_App/source/writer-app/src/stores/ai.ts, F:/AI_Write_App/source/writer-app/src/stores/codex.ts, F:/AI_Write_App/source/writer-app/src/stores/sandbox.ts, F:/AI_Write_App/source/writer-app/src/views/BoardView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/GraphView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/HomeView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/StatsView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/TimelineView.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/views/WriteView.vue?vue&type=script&setup=true&lang.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[plugin vite:reporter] 
+(!) F:/AI_Write_App/source/writer-app/node_modules/fflate/esm/browser.js is dynamically imported by F:/AI_Write_App/source/writer-app/src/core/skills.ts, F:/AI_Write_App/source/writer-app/src/core/skills.ts but also statically imported by F:/AI_Write_App/source/writer-app/src/core/docxRead.ts, dynamic import will not move module into another chunk.
+[39m
+[33m[plugin vite:reporter] 
+(!) F:/AI_Write_App/source/writer-app/src/stores/ai.ts is dynamically imported by F:/AI_Write_App/source/writer-app/src/main.ts but also statically imported by F:/AI_Write_App/source/writer-app/src/components/AiPromptDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/CandidatePanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/CodexPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/ContextPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/MemoryPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/OutlineDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/RightDock.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SettingsDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/SkillPanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/StylePanel.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/components/TranslateDialog.vue?vue&type=script&setup=true&lang.ts, F:/AI_Write_App/source/writer-app/src/stores/translate.ts, F:/AI_Write_App/source/writer-app/src/views/WriteView.vue?vue&type=script&setup=true&lang.ts, dynamic import will not move module into another chunk.
+[39m
+computing gzip size...
+[2mdist/[22m[32mindex.html                          [39m[1m[2m    1.50 kB[22m[1m[22m[2m │ gzip:   1.00 kB[22m
+[2mdist/[22m[32massets/pdf.worker.min-CjEcRF4W.mjs  [39m[1m[2m1,264.34 kB[22m[1m[22m
+[2mdist/[22m[35massets/index-B1OhxAUx.css           [39m[1m[2m   82.47 kB[22m[1m[22m[2m │ gzip:  15.17 kB[22m
+[2mdist/[22m[36massets/pdf.worker.min-Dualf0xi.js   [39m[1m[2m    0.09 kB[22m[1m[22m[2m │ gzip:   0.11 kB[22m
+[2mdist/[22m[36massets/core-D9ZGnyhG.js             [39m[1m[2m    2.49 kB[22m[1m[22m[2m │ gzip:   1.01 kB[22m
+[2mdist/[22m[36massets/window-CvxctAHd.js           [39m[1m[2m   15.41 kB[22m[1m[22m[2m │ gzip:   3.89 kB[22m
+[2mdist/[22m[36massets/vue-DSni1QLr.js              [39m[1m[2m   76.18 kB[22m[1m[22m[2m │ gzip:  30.08 kB[22m
+[2mdist/[22m[36massets/export-08c91WSz.js           [39m[1m[2m  389.21 kB[22m[1m[22m[2m │ gzip: 115.00 kB[22m
+[2mdist/[22m[36massets/editor-CNedInf6.js           [39m[1m[2m  413.53 kB[22m[1m[22m[2m │ gzip: 140.32 kB[22m
+[2mdist/[22m[36massets/pdf-BlkMGBpl.js              [39m[1m[2m  436.61 kB[22m[1m[22m[2m │ gzip: 130.94 kB[22m
+[2mdist/[22m[36massets/index-C1DKPsUZ.js            [39m[1m[2m  465.55 kB[22m[1m[22m[2m │ gzip: 172.06 kB[22m
+[32m✓ built in 10.75s[39m
+▶ 启动预览服务器 http://127.0.0.1:5199/
+▶ 真实浏览器验收
+
+
+── 0. 打开首页（真实 Chrome）
+  ✓ 页面加载且标题正确
+  ✓ 首页渲染（墨栈写作台 / 新建作品）
+  ✓ 浏览器被识别为支持 FSA（无「请用 Edge / Chrome」警告）
+
+── 1. 新建作品（走真实 showDirectoryPicker → OPFS 句柄）
+  ✓ 书名输入框接受真实键盘输入
+  ✓ 进入写作界面（顶栏出现）
+  ✓ 标准目录已落盘
+  ✓ 作品信息.md 写入书名
+  ✓ 作品信息.md 写入作者
+
+── 2. 建章：新作品给得出可见入口
+  ✓ 新作品自动展开章节树（不再是一片空白）
+  ✓ 编辑器给出「新建第一章」起步入口
+  ✓ 章节出现在章节目录里
+  ✓ 章节标题取自起步输入框
+  ✓ 起步入口在建成后自动收起
+
+── 3. 编辑器写作与自动保存
+  ✓ 正文进入编辑器
+  ✓ 顶栏字数已更新（不是 0）
+  ✓ 顶栏显示「已保存」
+    磁盘文件：["端到端验收作品/.snapshots/正文__第001章 启程.md/20261011-231307-auto.md","端到端验收作品/作品信息.md","端到端验收作品/大纲/.mdAI文件/人物大纲.md","端到端验收作品/大纲/.mdAI文件/分卷大纲.md","端到端验收作品/大纲/.mdAI文件/剧情大纲.md","端到端验收作品/正文/第001章 启程.md","端到端验收作品/记忆/伏笔台账.md","端到端验收作品/记忆/时间线.md","端到端验收作品/记忆/状态表.md","端到端验收作品/记忆/逐章摘要.md"]
+  ✓ 章节文件已写入 正文/
+  ✓ 落盘内容含正文
+  ✓ 章文件带 front matter（title/status）
+  ✓ front matter 里 title 正确
+  ✓ 默认状态为「待写」
+
+── 4. 刷新页面：目录句柄能否恢复
+  ✓ 刷新后自动回到写作界面（不掉回首页）
+  ✓ 刷新后正文内容完整恢复
+  ✓ 刷新后章节树恢复
+  ✓ 刷新后书名正确
+
+── 5. 五个主视图（Ctrl+1…5）
+  ✓ Ctrl+1 切到「写作」且渲染成功
+  ✓ Ctrl+2 切到「看板」且渲染成功
+  ✓ Ctrl+3 切到「关系图」且渲染成功
+  ✓ Ctrl+4 切到「时间线」且渲染成功
+  ✓ Ctrl+5 切到「统计」且渲染成功
+  ✓ 稿纸宽度固定（空章也不塌缩）
+  ✓ 稿纸在写作区里水平居中
+
+── 5.1 关系图：拖动节点真的重绘
+  ✓ 关系图把设定条目画成节点
+  ✓ 显式 [[双链]] 画成连线
+  ✓ 拖动节点后坐标跟着鼠标变（节点是响应式的）
+
+── 6. 右侧九面板
+    面板页签：["技能","卡片","设定","伏笔","检查","文风","统计","记忆","资料","搜索"]
+  ✓ 九个离线面板都在（AI 未配置时不出现 AI 页签）
+  ✓ 面板「技能」可渲染
+  ✓ 面板「卡片」可渲染
+  ✓ 面板「设定」可渲染
+  ✓ 面板「伏笔」可渲染
+  ✓ 面板「检查」可渲染
+  ✓ 面板「文风」可渲染
+  ✓ 面板「统计」可渲染
+  ✓ 面板「记忆」可渲染
+  ✓ 面板「资料」可渲染
+  ✓ 面板「搜索」可渲染
+
+── 7. 其它入口
+  ✓ Ctrl+F 打开查找
+  ✓ F11 进入专注模式
+  ✓ 正文内 Ctrl+E 不再抢去切专注（让位给行内代码）
+  ✓ 正文内 Ctrl+B 不会顺手把章节目录收起来
+  ✓ 「参考」按钮可开合（未崩溃）
+
+── 7.5 章节树 ＋：应用内对话框新建第二章
+  ✓ 建章走应用内对话框，没有触发任何原生弹窗
+  ✓ 对话框标题正确
+  ✓ 输入框给出「留空会得到什么名字」的提示
+  ✓ 刚打开时没有红色报错（用户还没动手，不该先吓人）
+  ✓ 空输入时「确定」是禁用的（原生 prompt 做不到）
+  ✓ 空输入时给出「不能为空」这类可读原因
+  ✓ 对话框输入框收到了文字
+  ✓ 填了标题后「确定」变为可点
+  ✓ 回车即提交，对话框自动关闭
+  ✓ 章节树 ＋ 能建出第二章
+  ✓ 第二章文件已落盘（无 .crswap 临时文件残留）
+  ✓ Esc 关得掉对话框
+  ✓ 取消后章节数不变（没偷偷建出空章）
+  ✓ 全程零原生弹窗
+
+── 7.6 章节切换：正文不能串章
+  ✓ 切回第一章显示的是第一章正文
+  ✓ 标题跟随切换到第一章
+  ✓ 切到第二章不再残留第一章正文
+
+── 7.7 导入已有稿件（真实文件输入框）
+    切章下拉框：高 31px · 旁边输入框 31px · 内容盒 17px · 一行字要 17px
+  ✓ 切章方式下拉框与旁边输入框一样高（三格对齐，不再矮一截）
+  ✓ 下拉框的内容盒装得下一行汉字（装不下就会削字，第X章 看成 第x音）
+  ✓ 三个切章方式选项都完整显示（最长那个也不被横切）
+  ✓ 正则那格换成人话（示例不再是 § 这种符号，并说明留空即可）
+  ✓ 说明文字不再被从中间劈开（大纲那段自成一行，「纲）。」不再孤零零占一行）
+  ✓ 导入弹窗里没有控件在削字 / 切字
+  ✓ UTF-8 稿件被识别为 UTF-8
+  ✓ 预览列出两章且标题已去掉「第X章」前缀
+  ✓ 导入后章节树变成 4 章（原有 2 章没被动）
+  ✓ 导入的 2 章落进新建的卷目录
+  ✓ 新卷自动生成 卷纲.md
+  ✓ 导入文件带 front matter 且按「草稿」入库
+  ✓ 导入的正文内容完整落盘
+  ✓ GBK 稿件被认出是 GB 系编码（没有静默变成乱码）
+  ✓ GBK 稿件的章标题解码正确
+  ✓ GBK 稿件没有触发乱码告警
+  ✓ 导入对话框可关闭
+
+── 7.7b 导入大纲（粘进去 → 认层级 → 写卷纲与章纲）
+  ✓ 粘进去就认出卷与章
+  ✓ 写进哪个文件写在按钮旁边（作者不用猜）
+  ✓ 卷目录与卷纲都建出来了
+  ✓ 卷纲的 front matter 里写了卷目标
+  ✓ 卷纲正文里有章节安排
+  ✓ 卷下建成 2 个空章坑位
+  ✓ 坑位是空的 —— 导入大纲不替作者写正文
+  ✓ 章纲导入后章数还是 6（对上已有章节只补目标）
+  ✓ 章纲写进了「本章目标」
+  ✓ 章纲没有动正文
+  ✓ 导入大纲对话框可关闭
+
+── 7.8 备份与恢复（真的把 zip 下载下来验）
+  ✓ 设置 → 通用 里能打开「备份与存储」
+  ✓ 打包结果给出文件数与体积
+  ✓ 备份文件落到了磁盘
+  ✓ 产物是合法 zip（PK 头 + 中央目录结束记录）
+  ✓ zip 里有备份清单
+  ✓ zip 里有正文与记忆目录的条目
+  ✓ 条目名声明了 UTF-8 标志位（zip 通用位 bit 11）
+  ✓ 恢复前能看到备份来自哪本书
+  ✓ 恢复前列出可恢复文件数
+  ✓ 恢复按 skip 模式执行并报出结果
+  ✓ 恢复后作品内容仍完整（没被清空）
+  ✓ 占用页列出正文目录与体积
+  ✓ 占用页给出快照统计
+  ✓ 占用页能改自动快照策略
+  ✓ 设置与备份对话框都能关掉
+
+── 7.9 写作体验补完：章节筛选 · 快捷键一览 · 导航历史 · 主题
+  ✓ 筛选前章节树有 6 章可筛
+  ✓ 样例里「重逢」是重名章，正好用来验「命中 N / 共 M」
+  ✓ 筛选框能收窄章节列表
+  ✓ 筛选给出「命中 N / 共 M 章」计数
+  ✓ 命中的关键词在树里高亮
+  ✓ 筛出来的每一章标题都含关键词
+  ✓ #状态 筛选生效并回显条件
+  ✓ 状态筛选后剩下的章确实都是该状态
+  ✓ Esc 清空筛选、列表恢复
+  ✓ Ctrl+P 跳到章节筛选框
+  ✓ 按 ? 打开快捷键一览
+  ✓ 一览里出现 Ctrl + S 与 Alt + ←
+  ✓ 一览按 写作/正文编辑器/导航/界面 分组
+  ✓ 一览渲染出十几个键帽
+  ✓ 一览可以按关键词筛
+  ✓ 第一下 Esc 只清搜索、面板还在
+  ✓ 第二下 Esc 关闭一览
+  ✓ 两次点章后停在第 4 章
+  ✓ 工具栏「后退」此时可点、「前进」不可点
+  ✓ 「后退」按钮的提示写明要去哪一章
+  ✓ Ctrl+Alt+← 回到上一个编辑位置
+  ✓ 后退之后「前进」变为可点
+  ✓ Ctrl+Alt+→ 前进回第 4 章
+  ✓ 后退能连续走多步（历史不只一格）
+  ✓ 退到底后「后退」按钮变灰
+  ✓ 退到底后编辑区仍有内容（回放不会把章节弄空）
+  ✓ Ctrl+. 依次切到 护眼 / 夜间 / 白底
+  ✓ 夜间主题：html 上有 theme-dark 且 color-scheme=dark
+  ✓ 切回白底后不留主题类
+  ✓ 夜间模式的正文底色确实变暗了
+  ✓ 夜间模式下 body 底色也变了（说明类挂在 html 上生效）
+  ✓ 夜间主题类生效于整页
+  ✓ 再按一次回到白底
+
+── 7.10 章节目录：焦点进列表后全键盘翻章
+  ✓ 目录列表能拿到键盘焦点
+  ✓ 聚焦时光标自动落在当前章上
+  ✓ Home 跳到列表最上面（卷标题行）
+  ✓ ↓ 逐行往下走，不会卡住
+  ✓ ↑ 能退回上一行
+  ✓ End 跳到最后一章
+  ✓ 回车打开光标所在的那一章
+  ✓ F2 就地重命名（该行标题变成输入框）
+  ✓ 改名框自己拿到焦点（否则按完 F2 敲字没反应）
+  ✓ 回车确认后新名字出现在章节树里
+  ✓ 改名后章节数不变（是改名，不是新建/删除）
+  ✓ 改名后焦点回到列表（能接着用方向键）
+
+── 7.10b 快照回滚：编辑器与磁盘必须同时改（不然下一个按键就把回滚冲掉）
+  ✓ （前置）回滚前的正文已落盘（等自动保存真的写完）
+  ✓ 快照：手动快照建出来了并列在面板里
+  ✓ （前置）改动后的正文已落盘
+  ✓ 快照：点得到那条手动快照的「回滚」
+  ✓ 快照：回滚前走应用内确认框（不是原生 confirm）
+  ✓ 快照回滚：编辑区真的换成了快照内容（这是当初那个 bug 的正脸）
+  ✓ 快照回滚：磁盘上同步成了快照内容
+  ✓ 快照回滚：之后接着写不会把回滚覆盖回去（屏幕与盘同源）
+
+── 7.11 降级沙盒：导入 → 写 → 导出（Firefox / Safari 走的那条路）
+  ✓ 降级：首页给出沙盒入口，而不是一句「请用 Edge / Chrome」
+  ✓ 降级：代价写在明面上（不是只报喜）
+  ✓ 降级：展开后能看到三条硬限制
+  ✓ 降级：直接读写文件夹的入口收起来了（留着也点不通）
+  ✓ 降级：不弹目录选择器也能新建作品
+  ✓ 降级：顶栏立刻挂出沙盒标记
+  ✓ 降级：沙盒作品一个文件都没写进真实目录
+  ✓ 降级：编辑器与自动保存照常（「已保存」指的是浏览器里）
+  ✓ 降级：磁盘上依旧什么都没有 —— 自动保存 ≠ 落盘
+  ✓ 降级：面板第一句就说清「只有导出才落盘」
+  ✓ 降级：面板列出「与磁盘不一样」的文件
+  ✓ 降级：导出包落到了磁盘
+  ✓ 降级：导出的是合法 zip
+  ✓ 降级：zip 里的条目名就是作品内的相对路径
+  ✓ 降级：zip 里带了「解开之后怎么用」的说明与清单
+  ✓ 降级：导出后顶栏变成「已同步」
+  ✓ 降级：沙盒面板能关掉
+  ✓ 降级：内存镜像已经落进 IndexedDB（刷新后才拿得回来）
+  ✓ 降级：最近作品记的是沙盒 id（下次打开才知道该恢复它）
+  ✓ 降级：刷新后自动回到沙盒作品（不用重新导入）
+  ✓ 降级：刷新后正文没丢（内存镜像落过 IndexedDB）
+  ✓ 降级：回来时标记仍是「已同步」
+
+── 7.11 窄窗口顶栏：三档密度（缩间距 / 收进菜单）+ 换行兜底
+  ✓ 窄窗口 1600px：顶栏不溢出（最右按钮完整落在视口内）
+  ✓ 窄窗口 1600px：顶栏不散架（最多两行）
+  ✓ 窄窗口 1440px：顶栏不溢出（最右按钮完整落在视口内）
+  ✓ 窄窗口 1440px：顶栏不散架（最多两行）
+  ✓ 窄窗口 1280px：顶栏不溢出（最右按钮完整落在视口内）
+  ✓ 窄窗口 1280px：顶栏不散架（最多两行）
+  ✓ 窄窗口 1100px：顶栏不溢出（最右按钮完整落在视口内）
+  ✓ 窄窗口 1100px：顶栏不散架（最多两行）
+  ✓ 窄窗口 980px：顶栏不溢出（最右按钮完整落在视口内）
+  ✓ 窄窗口 980px：顶栏不散架（最多两行）
+  ✓ 窄窗口 880px：顶栏不溢出（最右按钮完整落在视口内）
+  ✓ 窄窗口 880px：顶栏不散架（最多两行）
+  ✓ 窗口越窄密度只降不升（不会在两档之间来回横跳）
+  ✓ 1600px：一条放得下就只占一条（不许白白多占一行）
+  ✓ 放不下时退回两行（工具栏独占第二行、按钮完整可见），而不是把按钮推出屏幕
+  ✓ 两行时不动用「更多」菜单（入口只在更窄、真的放不下的档位才出现）
+  ✓ 窄窗口：右区让位后露出「更多」入口
+  ✓ 窄窗口：宽屏顶栏能做的动作，这里一个不少（顶栏 + 菜单里都找得到）
+  ✓ 窄窗口：菜单一屏放得下，不用滚动去找末尾的动作
+  ✓ 窄窗口：菜单里的动作真的能执行（导出面板打开了）
+  ✓ 窗口拉宽：密度自动升回、顶栏仍不溢出
+  ✓ 窗口拉宽：窄档的「更多」入口自己收回去
+  ✓ 降级：关闭作品后回到首页
+  ✓ 降级：首页给出「继续写」入口（浏览器里那份还在）
+  ✓ 降级：入口上标明已同步（不会让人以为还有东西没导出）
+
+── 7.12 手机适配：安全区 · 底部工具条 · 抽屉 · 返回键 · 标点条
+  ✓ 手机：<html> 挂上 ua-mobile（样式与脚本共用这一个标记）
+  ✓ 手机：安全区变量已接线（env(safe-area-inset-*) 取得到值）
+  ✓ 手机：首页换成作品库形态（桌面那套入口收起来）
+  ✓ 手机：底部工具条给出五个拇指区动作
+  ✓ 手机：工具条按钮触摸目标 ≥ 44px
+  ✓ 手机：两个侧栏默认收起（一进来就能写字，不被抽屉盖住）
+  ✓ 手机：顶栏不溢出（最右的按钮完整落在屏幕内）
+  ✓ 手机：更多菜单收着被顶栏让位的动作（视图 / 导出 / 快照 / 导入 / 设置）
+  ✓ 手机：从更多菜单切视图真的生效，菜单自己收起
+  ✓ 手机：目录是盖在稿纸上的抽屉，并挂出遮罩（点别处可收起）
+  ✓ 手机：章节行的触摸目标 ≥ 44px
+  ✓ 手机：系统返回键先关抽屉（不退应用）
+  ✓ 手机：抽屉收掉后遮罩也跟着没
+  ✓ 手机：左边缘右滑拉开目录（手势真的接上了）
+  ✓ 手机：点抽屉外的遮罩能收起抽屉
+  ✓ 手机：右边缘左滑拉开资料面板
+  ✓ 手机：竖滑不触发抽屉（上下滚稿纸不会误开）
+  ✓ 手机：键盘弹起时工具条变成标点条（「」——……）
+  ✓ 手机：标点条贴在键盘上沿（bottom = 量出来的键盘高度）
+  ✓ 手机：键盘收起后工具条回到导航形态
+
+── 7.13 切换动效（推入 / 抽屉 / 页签）与全局视图的手机重排
+  ✓ 动效：往后翻（写作→看板）走「从右推入」这一组（vp-left）
+  ✓ 动效：推入时新旧两份同时在场上，不是先空一下再出现
+  ✓ 手机：看板五列横排改成单列纵向（滚动方向只留上下）
+  ✓ 手机：看板每列撑满屏宽，不再被挤成一条缝
+  ✓ 手机：卡片给出「移到…」入口（触摸屏没有 HTML5 拖放，桌面那套拖拽根本不触发）
+  ✓ 手机：「移到…」展开成一排够高的状态按钮
+  ✓ 手机：点「移到…」真的改了章节状态（触摸设备上唯一的改法）
+  ✓ 手机：改完给了一句回执，不和桌面那条路径两样
+  ✓ 动效：往前翻（看板→写作）方向反过来（vp-right）
+  ✓ 动效：目录从左边滑出来（drawer-l），遮罩同时淡入（scrim）
+  ✓ 动效：收起时也是滑出去（不是直接消失）
+  ✓ 手机：资料面板的页签点得到（≥2 个）且触摸目标 ≥ 36px
+  ✓ 动效：切右侧页签走淡入横移（dock-*），不是硬切
+  ✓ 手机：关系图详情栏撑满整行（不再是贴底那条 210px 窄栏）
+  ✓ 手机：画布留出足够高度（不会被详情栏挤成一条）
+  ✓ 手机：关系图的说明改成手指的说法（「按住圆点拖动」）
+  ✓ 手机：时间线右侧矛盾栏挪到底下（改成上下两段）
+  ✓ 手机：矛盾栏撑满整行，不再把事件流挤成一条缝
+  ✓ 手机：统计的固定两列改成单列（390px 上每列只有 ~180px，数字会换行）
+
+── 7.13 大纲：卷数/章数自己定 · 导入后自动填 · 中文标签与想法
+  ✓ 大纲：规模是三个输入框（卷数 / 章数 / 每章字数），不是一段算好给人看的文字
+  ✓ 大纲：没有「共 N 卷 · M 章」那种自动算出来的行（没导入大纲时它最没意义）
+  ✓ 大纲：章数改成 12，预览跟着重排（4 卷 × 3 章）
+  ✓ 大纲：粘进大纲后卷数/章数自动填成大纲的样子（2 卷 5 章）
+  ✓ 大纲：预览照大纲原文显示（不均匀的分卷 3/2 不被抹平）
+  ✓ 大纲：改卷数/章数后重排（3 卷 9 章，范围首尾相接）
+  ✓ 设置：Base URL / Key / 模型名 / 开关都能配（只为解锁入口，不发请求）
+  ✓ 设置：填完就解锁 AI 层（不用重启）
+  ✓ AI 推荐：标签够多且分好组
+  ✓ AI 推荐：有男频 / 女频
+  ✓ AI 推荐：有字数档（0-50 / 50-100 / 100-150 / 150-200 / 200 以上）
+  ✓ AI 推荐：题材标签比原来多（都市 / 系统流 / 同人 / 克苏鲁 都在）
+  ✓ AI 推荐：点选 + 自定义标签都进了「AI 会看到」那一行（作者不用猜自己写的进没进去）
+  ✓ AI 推荐：想法是单独一栏，可写散句
+  ✓ AI 推荐：没打分隔符也切得开（女频甜宠 → 女频 + 甜宠）
+  ✓ AI 推荐：点「100-150万字」顺带把章数定好（125 万 ÷ 每章 3000 ≈ 417 章）
+  ✓ AI 推荐：篇幅档的选中态是算出来的（跟着字数走，不另存一份状态）
+
+── 7.14 全界面扫一遍：控件文字还有没有被裁的
+    （本节停在手机样式下量，输入框 16px；作者看到的桌面那一屏已在 §7.7 量过）
+  ✓ 「写作」视图没有控件在削字 / 切字
+  ✓ 「看板」视图没有控件在削字 / 切字
+  ✓ 「统计」视图没有控件在削字 / 切字
+  ✓ 九个面板都没有控件在削字 / 切字（查了 12 个）
+  ✓ 五个弹窗都没有控件在削字 / 切字
+
+── 7.15 候选区删除与换作品清理
+  ✓ AI 层开启后候选页签出现
+  ✓ 没有候选时给出去哪生成的指引（不是一片空白）
+  ✓ 候选为空时不显示「清空」按钮
+  ✓ 候选为空时不显示删除按钮
+  ✓ 两张候选都渲染出来了
+  ✓ 候选卡片上有删除入口
+  ✓ 删一张后只剩一张
+  ✓ 清空后候选区回到空态
+
+── 7.16 AI 生成设定面板把输入摊开
+  ✓ 设定面板有「让 AI 生成设定」入口
+  ✓ 摊开了输入来源（大纲 / 标签两行都在）
+  ✓ 大纲那一行给出了实情（文件名，或明说没读到）
+  ✓ 没选过标签时明说 + 指路（不是默默留空）
+
+── 7.17 技能分类：五类页签 · 移动 · 隐藏 · AI 指令框
+  ✓ 技能页签常驻（技能是作者的提示词资产，不联网也要能管）
+  ✓ ⚠ 分类页签齐了（全部 + 大纲/设定/文本生成/记忆/文风）
+  ✓ 页签上带数量（作者不用点进去数）
+  ✓ ⚠ 点「大纲」页签，里面是「大纲拆分」（启发式没把它分错类）
+  ✓ 每条技能都有移动分类的下拉
+  ✓ ⚠ 移动生效：挪到「设定」后从大纲页签消失（不是下拉框自嗨）
+  ✓ ⚠ 移动生效：它出现在「设定」页签里
+  ✓ ⚠ 隐藏/删除先拦一道应用内确认（不是 window.confirm，也不是直接动手）
+  ✓ ⚠ 隐藏的技能进了「已隐藏的技能」，可恢复（不是单向操作）
+  ✓ 恢复之后「已隐藏的技能」那一栏自己收起来
+  ✓ ⚠ 有「让 AI 整理技能」入口（作者下指令的框在这里）
+  ✓ 打开后有指令输入框
+  ✓ ⚠ 默认指令已经替作者想好第一句（清掉无关技能）
+  ✓ ⚠ 明说「方案出来后由你勾选确认，不会直接动手」
+
+── 7.18 长正文不出稿纸（白气泡 bug 回归闸门）
+  ✓ ⚠ 稿纸高度能跟着正文长（不是被 flex 钉在一屏高）
+  ✓ ⚠ 正文超过一屏时稿纸也超过一屏（内容全部还在纸上）
+
+── 7.19 文风学习样本 · AI 指令对话框 · 扩写退化
+  ✓ ⚠ 文风面板有「让 AI 学我的文风」这一块
+  ✓ ⚠ 明说样本存在作品目录的哪里（作者的目录是公开的）
+  ✓ ⚠ 支持导入 docx / pdf / txt / md 四种
+  ✓ 有粘贴文字的框（不想导文件时直接粘）
+  ✓ 样本名与粘贴框都能填
+  ✓ ⚠ 粘的文字真的存成了样本（列表里出现 + 带字数）
+  ✓ ⚠ 有样本且 AI 已解锁时「让 AI 学并出要点」可点（没样本时不该可点）
+  ✓ ⚠ 删样本先摊开名单确认（那是作品目录里的真文件，不是内存里的一条记录）
+  ✓ 确认之后样本真的从列表消失
+  ✓ ⚠ 候选区有「＋ 让 AI 写 / 扩写…」入口
+  ✓ ⚠ 指令框里有「扩写」（作者要的就是能下扩写指令）
+  ✓ ⚠ 明写「动哪一段」，且给的是人话（不是空白 / 不是「undefined」）
+  ✓ 有目标字数（「写得详细点」等于没说）
+  ✓ ⚠ 脚注重申「点了采纳才写进正文」（跟所有 AI 功能同一条铁律）
+  ✓ ⚠ 大指令框够高（不是两行输入框）：8 行 textarea
+  ✓ ⚠ 扩写没选区时说出来「将对本章最后一段扩写」并给字数（静默换目标是 bug）
+  ✓ Esc 能关掉指令框（不用去找×）
+
+── 7.20 技能名中文化 · 翻译对话框
+  ✓ ⚠ 有译名时列表显示中文（作者看得懂了）
+  ✓ ⚠ 原名还挂在旁边（译名只是显示层，原文一个字没动）
+  ✓ ⚠ 搜索认中文译名（不是只能搜英文原名）
+  ✓ ⚠ 技能面板有「让 AI 翻译技能名」入口
+  ✓ ⚠ 候选区有「翻译正文…」入口
+  ✓ ⚠ 三种语言都在：中文 / English / 日本語
+  ✓ ⚠ 范围能选：当前章 / 全书
+  ✓ ⚠ 开翻之前先报代价（多少字 / 分几块）
+  ✓ ⚠ 明说「产出先进候选区，不会动你的原文」
+  ✓ ⚠ 没有把译文写回原章这条路（译错了还能救，原稿被盖掉救不回来）
+  ✓ 人名地名默认保留原文（不音译、不另起名）
+  ✓ Esc 能关掉翻译框
+
+── 8. 控制台与网络
+  ✓ 无未捕获的页面异常
+  ✓ 无控制台 error
+  ✓ 无失败的资源请求
+
+============================================================
+真实浏览器验收：332 项全部通过 ✅
+截图目录：F:\AI_Write_App\source\writer-app\.e2e-shots
+报告：F:\AI_Write_App\source\writer-app\.e2e-shots\report.txt

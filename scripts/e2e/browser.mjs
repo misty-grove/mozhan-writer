@@ -2367,6 +2367,110 @@ try {
     await page.screenshot(join(SHOTS, '08f-style-learn.png'))
   }
 
+  /* ---------- 7.20 技能列表中文化 · 全文翻译（中 / 英 / 日） ----------
+     浏览器里能验的是「这条走得通 + 界面说的跟做的一致」：
+       - 译名只改显示：注入一份译名，看列表是不是显示中文、原名是不是还挂着；
+       - 翻译对话框：三国语言都在、开翻前先把「多少字 / 分几块」报出来、
+         **没有「把译文写回原章」这条路**（译错了还能救，原稿被盖掉救不回来）。
+     真正的翻译要发网络请求，本节不点「开始翻译」（那是 selfcheck §61 的提示词断言管的）。 */
+  section('7.20 技能名中文化 · 翻译对话框')
+  {
+    /* ---- 技能译名只改显示 ---- */
+    await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.dock .tabs button')).find((x) => /技能/.test(x.textContent))
+      if (b) b.click()
+      return true
+    `)
+    await page.waitFor("document.querySelector('.sk')", { timeout: 8000, label: '技能面板' })
+    await sleep(400)
+
+    const injected = await page.evaluate(`
+      const dev = window.__writerDev
+      if (!dev || !dev.settings) return false
+      dev.settings.skillZh = { '大纲拆分': { zh: '拆分大纲', desc: '把想法拆成能写的章节。' } }
+      return true
+    `)
+    if (!injected) {
+      note('    （拿不到 __writerDev.settings，跳过「译名显示」的行为验证；纯函数断言在 selfcheck §61）')
+    } else {
+      await sleep(400)
+      // 列表是按分类排序的，别假设它在第一条 —— 按名字把它找出来
+      const shown = await page.evaluate(`
+        const it = Array.from(document.querySelectorAll('.sk .list .item')).find((d) => /大纲拆分|拆分大纲/.test(d.innerText))
+        return it ? it.innerText : ''
+      `)
+      check('⚠ 有译名时列表显示中文（作者看得懂了）', /拆分大纲/.test(shown), shown.replace(/\s+/g, ' ').slice(0, 80))
+      check('⚠ 原名还挂在旁边（译名只是显示层，原文一个字没动）', /大纲拆分/.test(shown), shown.replace(/\s+/g, ' ').slice(0, 80))
+
+      // 搜索要认中文译名：作者记住的是「拆分大纲」，不是原始文件名
+      await page.evaluate(`
+        const i = document.querySelector('.sk input[placeholder="搜索技能"]')
+        if (i) { i.focus(); i.value = '拆分'; i.dispatchEvent(new Event('input', { bubbles: true })) }
+        return true
+      `)
+      await sleep(400)
+      const nHit = await page.evaluate("return document.querySelectorAll('.sk .list .item').length")
+      check('⚠ 搜索认中文译名（不是只能搜英文原名）', nHit === 1, `${nHit} 条`)
+      await page.evaluate(`
+        const i = document.querySelector('.sk input[placeholder="搜索技能"]')
+        if (i) { i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })) }
+        return true
+      `)
+      await sleep(300)
+      // 还原：别把验收数据留在作者的 settings 里
+      await page.evaluate("window.__writerDev.settings.skillZh = {}; return true")
+      await sleep(300)
+    }
+
+    const zhEntry = await page.evaluate(`
+      return Array.from(document.querySelectorAll('.sk .ai-box button')).some((b) => /让 AI 翻译技能名/.test(b.textContent))
+    `)
+    check('⚠ 技能面板有「让 AI 翻译技能名」入口', zhEntry)
+
+    /* ---- 翻译对话框 ---- */
+    await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.dock .tabs button')).find((x) => /候选/.test(x.textContent))
+      if (b) b.click()
+      return true
+    `)
+    await sleep(400)
+    const opened = await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.dock button')).find((x) => /翻译正文/.test(x.textContent))
+      if (!b) return false
+      b.click()
+      return true
+    `)
+    check('⚠ 候选区有「翻译正文…」入口', opened)
+    await page.waitFor(
+      "Array.from(document.querySelectorAll('.dialog')).some((d) => /翻译正文/.test(d.innerText))",
+      { timeout: 8000, label: '翻译对话框' }
+    )
+
+    const DIALOG = `
+      Array.from(document.querySelectorAll('.dialog')).find((d) => /翻译正文/.test(d.innerText))
+    `
+    const dlgTxt = await page.evaluate(`const d = ${DIALOG}; return d ? d.innerText : ''`)
+    const flatT = dlgTxt.replace(/\s+/g, ' ')
+    check('⚠ 三种语言都在：中文 / English / 日本語', /中文/.test(flatT) && /English/.test(flatT) && /日本語/.test(flatT), flatT.slice(0, 100))
+    check('⚠ 范围能选：当前章 / 全书', /当前章/.test(flatT) && /全书/.test(flatT))
+    // 开翻之前先报代价：翻译要花时间花钱，作者不该点下去才知道
+    check('⚠ 开翻之前先报代价（多少字 / 分几块）', /分\s*\d+\s*块/.test(flatT), (flatT.match(/[^·]*块/) || [''])[0])
+    check('⚠ 明说「产出先进候选区，不会动你的原文」', /不会动你的原文/.test(flatT))
+    check('⚠ 没有把译文写回原章这条路（译错了还能救，原稿被盖掉救不回来）',
+      !/替换本章|覆盖本章|写回原章/.test(dlgTxt))
+    check('人名地名默认保留原文（不音译、不另起名）',
+      await page.evaluate(`const d = ${DIALOG}; const i = d && d.querySelector('input[type=checkbox]'); return !!i && i.checked`))
+
+    // 趁对话框还开着截一张（关掉再截就只剩候选区了）；等遮罩淡入完，别拍成半透明
+    await sleep(600)
+    await page.screenshot(join(SHOTS, '08g-translate-dialog.png'))
+
+    await page.pressKey('Escape')
+    await sleep(400)
+    check('Esc 能关掉翻译框',
+      await page.evaluate(`return !Array.from(document.querySelectorAll('.dialog')).some((d) => /翻译正文/.test(d.innerText))`))
+  }
+
   /* ---------- 8. 报错汇总 ---------- */
   section('8. 控制台与网络')
   const realErrors = page.consoleErrors.filter((e) => !/favicon/i.test(e))

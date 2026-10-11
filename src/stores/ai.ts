@@ -155,6 +155,27 @@ export async function testConnect() {
 }
 
 /**
+ * 单次直连对话（不进候选区、不装配上下文），给「翻译 / 整理」这类
+ * **结果由应用自己处理**的功能用。
+ *
+ * 为什么不复用 `rawChat`：那条路不带取消，而翻译是分块的、一块可能跑很久，
+ * 作者中途想停必须停得下来（不然他会以为软件卡死了）。
+ */
+export async function chatOnce(system: string, user: string, signal?: AbortSignal): Promise<string> {
+  if (!apiReady()) {
+    throw new Error('走直连 API —— 请在设置里配好 API，或把引擎切到 both。')
+  }
+  return await layer.chat({
+    cfg: cfg(),
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ],
+    signal
+  })
+}
+
+/**
  * 不进候选区的裸对话：只给「技能整理」这类**结果由应用解析、再经人工确认**
  * 的功能用。正文类生成必须走 `generate()`（产出要能预览、能删、能采纳）。
  *
@@ -448,7 +469,8 @@ function labelOf(mode: Candidate['mode']): string {
     generate: '生成',
     fix: '纠错',
     setting: '设定生成',
-    style: '文风要点'
+    style: '文风要点',
+    translate: '译文'
   }[mode]
 }
 
