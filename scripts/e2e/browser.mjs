@@ -2349,12 +2349,22 @@ try {
     check('⚠ 扩写没选区时说出来「将对本章最后一段扩写」并给字数（静默换目标是 bug）',
       /本章最后一段/.test(scope) && /\d+\s*字/.test(scope), scope.replace(/\s+/g, ' '))
 
+    // 趁对话框还开着截一张 —— 关掉再截就只剩候选区了，这一节的主角看不见
+    await page.screenshot(join(SHOTS, '08e-ai-prompt-dialog.png'))
+
     await page.pressKey('Escape')
     await sleep(400)
     check('Esc 能关掉指令框（不用去找×）',
       await page.evaluate(`return !Array.from(document.querySelectorAll('.dialog')).some((d) => /给 AI 下指令/.test(d.innerText))`))
 
-    await page.screenshot(join(SHOTS, '08e-style-and-prompt.png'))
+    // 再截一张文风面板（回到文风页签），两处新界面各留一张
+    await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.dock .tabs button')).find((x) => /文风/.test(x.textContent))
+      if (b) b.click()
+      return true
+    `)
+    await sleep(500)
+    await page.screenshot(join(SHOTS, '08f-style-learn.png'))
   }
 
   /* ---------- 8. 报错汇总 ---------- */
