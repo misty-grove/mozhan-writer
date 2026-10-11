@@ -21,7 +21,8 @@ mkdirSync(PROFILE, { recursive: true })
 const child = spawn(EXE, [], {
   env: {
     ...process.env,
-    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`,
+    // --no-sandbox 必需：少了它 WebView2 的浏览器进程几秒后自杀（详见 desktop.mjs）
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --no-sandbox`,
     WEBVIEW2_USER_DATA_FOLDER: PROFILE
   },
   stdio: 'ignore',

@@ -1,0 +1,61 @@
+时间：2026-10-11T23:15:24.989Z
+可执行文件：F:\AI_Write_App\toolchain\target\writer-app\release\mozhan.exe
+作品根目录：E:\Worksplace\write-app-tmp\writer-desktop-e2e\桌面验收作品·中文目录
+结果：通过 44 项，失败 0 项
+
+
+
+流程记录：
+
+[一、窗口与 IPC 桥接]
+  ✓ WebView2 调试端口连上了  —— http://tauri.localhost/（第 1 次启动）
+  ✓ 窗口标题正确  —— 墨栈写作台 · 本地中文网文写作 AI 辅助
+  ✓ Tauri IPC 桥在场  —— invoke=function
+  ✓ withGlobalTauri=false 生效（window.__TAURI__ 不存在）  —— undefined
+  ✓ 首页渲染出内容（不是白屏）  —— 348 字符
+  ✓ 首页有可识别入口文案  —— 写
+
+[二、Rust 命令面（真实磁盘 + 真实 IPC）]
+  ✓ fs_perm 认得出存在的根目录  —— "granted"
+  ✓ fs_mkdir 建目录落到盘上
+  ✓ fs_mkdir 能建隐藏目录（软件自己用）
+  ✓ fs_write_file 写进真实磁盘
+  ✓ 写进去的字节和给的一模一样（含 front matter）
+  ✓ fs_read_file 读回来一致
+  ✓ 读文件时去掉 BOM，与浏览器宿主一致  —— "# 带 BOM 的文档\n"
+  ✓ fs_list_dir 列出目录  —— dir:设定
+  ✓ 隐藏目录（. 开头）不出现在列表里
+  ✓ DirEntry.kind 只会是 file / dir（前端按这个分叉）  —— dir:设定
+  ✓ fs_exists 分得清存在与不存在
+  ✓ ai_models 拒绝非 http(s) 地址（协议白名单）  —— AI 请求地址必须是 http(s) 链接，收到的是：ftp://example.com/v1/models
+  ✓ ai_chat 对连不上的地址给出中文错误（不静默）  —— 网络请求失败：error sending request for url (http://127.0.0.1:9/v1/
+  ✓ 越界写入被拒绝（上跳一级）  —— 路径里不能出现「..」
+  ✓ 越界写入被拒绝（连上跳两级）  —— 路径里不能出现「..」
+  ✓ 越界写入被拒绝（中途折返）  —— 路径里不能出现「..」
+  ✓ 越界写入被拒绝（夹带盘符）  —— Windows 的文件名里不能有冒号：C:
+  ✓ 越界写入被拒绝（片段里带分隔符）  —— 名字里不能有路径分隔符：a/b
+  ✓ 越界写入被拒绝（Windows 保留名）  —— 「con.md」是 Windows 的保留设备名，换成别的吧
+  ✓ 越界写入被拒绝（结尾的句点）  —— 名字不能以空格或点结尾：尾点.
+  ✓ 越界写入被拒绝（结尾的空格）  —— 名字不能以空格或点结尾：尾空格 
+  ✓ 八种越界写法一条都没漏
+  ✓ 越界尝试没有在作品根目录外留下文件
+  ✓ fs_read_file 拒绝空路径（不能把目录当文件读）  —— 读取文件必须指定具体的目标，不能是整个作品目录
+  ✓ fs_write_file 拒绝把目录当文件写  —— 「E:\Worksplace\write-app-tmp\writer-desk
+  ✓ 原子写不留下 .wrtmp 临时文件  —— 目录干净
+  ✓ fs_rename 改名落到盘上
+  ✓ fs_rename 拒绝带分隔符的新名字  —— 名字里不能有路径分隔符：../跑出去.md
+  ✓ fs_copy_dir 整库另存为（from=[]）且保留嵌套
+  ✓ fs_copy_dir 拒绝复制到自己里面（否则无限递归）  —— 不能把目录复制到它自己里面
+  ✓ fs_remove 幂等（删两次都算成功）
+  ✓ fs_remove 拒绝删掉作品根目录自己  —— 删除必须指定具体的目标，不能是整个作品目录
+  ✓ 读不存在的目录会失败  —— 读取目录失败（E:\Worksplace\write-app-tmp\writer-desktop-e2e\根本没有这个
+  ✓ 「不存在」没被误报成「路径非法」  —— 读取目录失败（E:\Worksplace\write-app-tmp\writer-desktop-e2e\根本没有这个
+
+[三、关窗守卫（不能把关窗本身弄坏）]
+  · 关闭请求结果：ack
+  ✓ 关窗请求后进程自行退出（15s 内）  —— 耗时 212ms
+
+[四、启动期报错采集]
+  ✓ 控制台没有 error
+  ✓ 没有未捕获的页面异常
+  ✓ 没有失败的网络请求

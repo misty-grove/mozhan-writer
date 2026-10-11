@@ -16,6 +16,11 @@
 //!
 //! - URL 只接受 `http(s)`，其余一律 `AppError::Path` 拒掉（防止被塞进 `file://` 之类）；
 //! - 本模块不做任何持久化：Key 在内存里用完即弃，不落盘、不打日志。
+//!
+//! # 代理规则
+//!
+//! 系统代理**照用**（要出国访问 API 的人离不开它），但**本机地址一律直连** ——
+//! 详见 [`netutil::is_loopback`](crate::netutil::is_loopback)。
 
 use crate::error::{AppError, Result};
 use futures_util::StreamExt;
@@ -40,10 +45,15 @@ fn assert_http_url(url: &str) -> Result<()> {
     }
 }
 
-fn client(connect_secs: u64, total_secs: u64) -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+fn client(connect_secs: u64, total_secs: u64, url: &str) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(connect_secs))
-        .timeout(std::time::Duration::from_secs(total_secs))
+        .timeout(std::time::Duration::from_secs(total_secs));
+    if crate::netutil::is_loopback(url) {
+        // 直连：不让系统代理插手本机地址（理由见 netutil::is_loopback）
+        builder = builder.no_proxy();
+    }
+    builder
         .build()
         .map_err(|e| AppError::Io(format!("HTTP 客户端初始化失败：{e}")))
 }
@@ -52,7 +62,7 @@ fn client(connect_secs: u64, total_secs: u64) -> Result<reqwest::Client> {
 #[tauri::command]
 pub async fn ai_models(url: String, api_key: String) -> Result<HttpOut> {
     assert_http_url(&url)?;
-    let cli = client(15, 30)?;
+    let cli = client(15, 30, &url)?;
     let resp = cli
         .get(&url)
         .bearer_auth(&api_key)
@@ -88,7 +98,7 @@ pub async fn ai_chat(
     on_event: Channel<StreamEvent>,
 ) -> Result<HttpOut> {
     assert_http_url(&url)?;
-    let cli = client(20, 600)?;
+    let cli = client(20, 600, &url)?;
     let resp = cli
         .post(&url)
         .bearer_auth(&api_key)

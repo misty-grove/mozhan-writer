@@ -127,14 +127,16 @@ mkdirSync(DST_PARENT, { recursive: true })
 const ROOT = winPath(WORK)
 const DST = winPath(DST_PARENT)
 
-/* WebView2 的用户数据目录：默认跟作品根目录待在一起，但允许单独指定。
+/* WebView2 的用户数据目录：默认跟作品根目录待在一起，但允许单独指定（排障用）。
  *
- * 为什么要留这个后门：WebView2 是**多进程**架构（UI 线程 + 若干渲染/GPU/网络子进程），
- * 子进程创建时会继承父进程的完整性级别与目录权限。实测在受限会话里，
- * 如果这个目录落在低完整性（Low Mandatory Level）的卷/目录树上，
- * 子进程起来后会在 10 秒左右静默消失 —— 调试端口跟着一起没了，
- * 表现成「等 桌面端调试端口 超时」，非常误导（看着像应用挂不起来，其实应用是好的）。
- * 参考 esbuild 那次（见工具链的 env 脚本）：同一个可执行文件换个目录就正常。
+ * 这里**曾经记错过原因**，留着别再踩：早先以为「目录落在低完整性卷上会让子进程静默消失」。
+ * 2026-10-11 实测证伪 —— icacls 查过 E:/F: 两个候选目录都没有 Low Mandatory Level 标签；
+ * 换 E 盘、换 F 盘、换默认 profile，三种位置**全都一样死**；而完全不带任何 WEBVIEW2_* 变量
+ * 启动时，应用窗口标题正确、撑满 40 秒不退出（是好端端的）。所以跟目录位置无关。
+ *
+ * 真凶是 **WebView2 自带的 Chromium 沙箱**：它在受限会话里初始化不了，
+ * 浏览器进程于是起来后三五秒自杀。修法是给 `--no-sandbox`（见下面 §起窗口），
+ * 跟浏览器端 e2e 给真 Chrome 加 `--no-sandbox` 是同一类问题。
  */
 const WV2_PROFILE = process.env.WEBVIEW2_USER_DATA_FOLDER || join(TMP_BASE, 'writer-desktop-e2e', 'webview2-profile')
 
@@ -160,6 +162,10 @@ let page = null
  * 同一份产物、同一套参数，换一次启动就完全正常（探针反复证明应用本体是好的），
  * 所以这是宿主的启动不稳，不该记成「应用坏了」。
  *
+ * 2026-10-11 补：上面这条「偶发」以前无解，现在查明是 **Chromium 自带沙箱**起不来
+ * （不是应用、也不是目录位置），已经通过 `--no-sandbox` 修掉，重试留着兜底。
+ * 排障时别再往「用户数据目录 / 低完整性」那条错路上走，注释里那段已经改正。
+ *
  * 每次重试换一个全新的用户数据目录，并先把上一轮的进程树收干净，
  * 否则第二次会撞在第一次的残骸上。只有全部试完还起不来才算失败。
  */
@@ -179,8 +185,12 @@ async function launchAndAttach() {
     child = spawn(EXE, [], {
       env: {
         ...process.env,
-        // WebView2 默认不开调试端口，必须显式告诉它
-        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`,
+        // WebView2 默认不开调试端口，必须显式告诉它。
+        //
+        // `--no-sandbox` 是**必需**的，不是可选加固项（2026-10-11 查实，见下面 §起窗口 的注释）：
+        // 少了它，浏览器进程会在起来后 3~5 秒自杀，症状是「调试端口闪一下就没了」，
+        // 端口会先变成「连得上但不应答」，再变成「拒绝连接」。
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT} --no-sandbox`,
         // 把 WebView2 的用户数据也隔离开，免得和真实使用的那份互相污染
         WEBVIEW2_USER_DATA_FOLDER: attempt === 1 ? WV2_PROFILE : `${WV2_PROFILE}-r${attempt}`
       },

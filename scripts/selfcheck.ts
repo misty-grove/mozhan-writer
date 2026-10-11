@@ -2864,6 +2864,43 @@ async function main() {
     check('⚠ 译文落点是「存为新章节」，不是改原章', readSrc('src/components/CandidatePanel.vue').includes('addChapterWithBody'))
   }
 
+  /* 62. 桌面端真窗口验收能跑起来（2026-10-11 排障得出）
+
+     这两条都是「**脚本自己**会退化」的坑，而且退化后很难从结果上看出是脚本坏了：
+
+     1. WebView2 必须带 `--no-sandbox`。少了它，浏览器进程起来三五秒后自杀，
+        症状是调试端口闪一下就没（先是连得上但不应答，再变成拒绝连接），
+        报出来像「应用挂不起来」，于是被误记成环境问题 —— 其实只差一个启动参数。
+        锚点只认 spawn 里那一行：注释里也写了 --no-sandbox，拿它当锚点等于没验。
+
+     2. 本机地址必须绕开系统代理。开着 Clash 的人环境变量里有 HTTP_PROXY，
+        reqwest 默认认它，于是连本地模型端点（127.0.0.1:11434）也被塞进代理。
+        这条同时是**产品行为**（离线优先的应用不该把本机请求发出去），
+        所以断言钉在源码上，单测则在 Rust 侧 netutil 里。 */
+  {
+    const dm = readSrc('scripts/e2e/desktop.mjs')
+    const aic = readSrc('scripts/e2e/ai-entry-check.mjs')
+    const probe = readSrc('scripts/e2e/_probe.mjs')
+    const arg = '--remote-debugging-port=${PORT} --no-sandbox'
+    check('⚠ 桌面验收：WebView2 必须带 --no-sandbox（少了浏览器进程会自杀，看着像应用坏了）',
+      dm.includes(arg) && aic.includes(arg) && probe.includes(arg))
+
+    const ai = readSrc('src-tauri/src/commands/ai.rs')
+    check('⚠ 出网：本机地址绕开系统代理（开着 Clash 时 127.0.0.1 也会被塞进代理）',
+      ai.includes('if crate::netutil::is_loopback(url) {'))
+    check('⚠ 出网：两个 AI 命令都把目标地址交给 client（代理判断不能只挂一半）',
+      ai.includes('client(15, 30, &url)') && ai.includes('client(20, 600, &url)'))
+    // 纯函数从 ai.rs 挪进 netutil，是因为 cargo test --no-default-features 不编译 ai.rs
+    // （ai.rs 依赖 tauri），留在里面测试根本跑不到 —— 看着加了测试，其实一条没跑。
+    check('⚠ 出网：is_loopback 放在不依赖 tauri 的模块里（否则单测跑不到它）',
+      readSrc('src-tauri/src/lib.rs').includes('pub mod netutil;'))
+    const nu = readSrc('src-tauri/src/netutil.rs')
+    check('⚠ 出网：域名里带「127.」不能被误判成本机（土法匹配的经典误伤）',
+      nu.includes('127.0.0.1.evil.example.com') && nu.includes('remote_is_not_loopback'))
+    check('出网：localhost / [::1] / 带 userinfo 的本机地址都认得出',
+      nu.includes('[::1]:11434') && nu.includes('user:pw@127.0.0.1'))
+  }
+
   console.log(failures === 0 ? '\n全部通过 ✅' : `\n失败 ${failures} 项 ❌`)
   process.exit(failures === 0 ? 0 : 1)
 }

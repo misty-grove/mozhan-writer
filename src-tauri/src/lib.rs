@@ -24,6 +24,7 @@
 
 pub mod error;
 pub mod fsops;
+pub mod netutil;
 pub mod path;
 
 #[cfg(feature = "desktop")]
