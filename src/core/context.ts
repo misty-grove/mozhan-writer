@@ -7,6 +7,7 @@ import type { DirRef } from '@/platform'
 import { countWords, estimateTokens } from './util'
 import { DIRS, VOLUME_OUTLINE_FILE, listAssetDocs, loadSummaries, readChapterBody, readVolumeOutline } from './workspace'
 import { cachedIndex, search, splitPassages } from './retrieve'
+import { collectStyleSamples, readStyleNotes } from './styleLearn'
 import type { AssetDoc, Chapter, ContextItem, Volume } from './types'
 
 export interface BuildOptions {
@@ -16,6 +17,8 @@ export interface BuildOptions {
   styleSampleChars: number
   /** 语义召回几条相关前文（0 = 关闭）。走本地 TF-IDF，不联网 */
   recallTop: number
+  /** 作者导入/粘贴的文风样本（记忆/文风样本/ 下的文件名），勾了才注入 */
+  styleSampleFiles?: string[]
 }
 
 export const DEFAULT_BUILD: BuildOptions = {
@@ -23,7 +26,8 @@ export const DEFAULT_BUILD: BuildOptions = {
   tailChars: 1200,
   includePrevFull: false,
   styleSampleChars: 1500,
-  recallTop: 4
+  recallTop: 4,
+  styleSampleFiles: []
 }
 
 async function tryRead(ref: DirRef, path: string[]): Promise<string> {
@@ -168,6 +172,38 @@ export async function buildContextItems(
         source: src.id
       })
     }
+  }
+
+  /* 8.1 作者导入的文风样本（记忆/文风样本/）：他想学的味道在这里，
+         不是从自己旧稿里抽的统计指标。目录不存在就是空，不算错。 */
+  if (opts.styleSampleFiles?.length) {
+    const text = await collectStyleSamples(ref, opts.styleSampleFiles, Math.max(1000, opts.styleSampleChars * 4))
+    if (text.trim()) {
+      push({
+        id: 'style-imported',
+        label: `导入的文风样本（${opts.styleSampleFiles.length} 份）`,
+        detail: '作者自己提供的参考，只学味道，不得复述其中情节',
+        group: '文风',
+        content: `（以下是作者导入的文风样本，用来把握句式与用词节奏，不得复述其中的情节与设定）\n\n${text}`,
+        enabled: true,
+        source: '记忆/文风样本'
+      })
+    }
+  }
+
+  /* 8.2 文风要点（记忆/文风要点.md）：AI 学过样本之后归纳出的规则，作者可手改。
+         有了它，续写才有「照这个味道写」的抓手，而不是靠模型临场发挥。 */
+  const styleNotes = await readStyleNotes(ref)
+  if (styleNotes) {
+    push({
+      id: 'style-notes',
+      label: `文风要点（${countWords(styleNotes)} 字）`,
+      detail: '记忆/文风要点.md —— AI 从样本里归纳的规则，作者可手改',
+      group: '文风',
+      content: `（以下是本作品的文风要点。写正文时必须遵守它，尤其是「禁忌」那一节）\n\n${styleNotes}`,
+      enabled: true,
+      source: '记忆/文风要点.md'
+    })
   }
 
   /* 9. 语义召回：按「本章目标 + 已写内容」，从全书找最相关的段落。

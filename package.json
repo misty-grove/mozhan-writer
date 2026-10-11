@@ -37,6 +37,7 @@
     "@tiptap/vue-3": "^2.11.5",
     "docx": "^9.1.1",
     "fflate": "^0.8.2",
+    "pdfjs-dist": "^6.4.299",
     "pinia": "^2.3.1",
     "tiptap-markdown": "^0.8.10",
     "vue": "^3.5.13"

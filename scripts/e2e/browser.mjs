@@ -2214,6 +2214,149 @@ try {
     await page.screenshot(join(SHOTS, '08d-long-body-paper.png'))
   }
 
+  /* ---------- 7.19 中文引号 · 文风学习 · AI 指令对话框 ----------
+     作者这三件事里，能被浏览器验的是「界面那条路走得通」：
+       - 文风面板能粘文字存样本、样本能进列表、删之前拦一道（AI 归纳要点那一步要发请求，
+         本节只验按钮按「有样本 + AI 已解锁」才亮，不真点）；
+       - AI 指令对话框能从候选区打开、模式里有「扩写」、
+         「动哪一段」那行真的给了一句人话（这是这个功能最怕翻车的地方）；
+       - Esc 能关。
+     引号那条是纯函数，行为断言在 selfcheck §60，浏览器这里不重复。
+     接着 7.18 的长正文跑（正文 60 段，正好能验「扩写退化到本章最后一段」）。 */
+  section('7.19 文风学习样本 · AI 指令对话框 · 扩写退化')
+  {
+    const hasDock = await page.evaluate("return !!document.querySelector('.dock')")
+    if (!hasDock) {
+      await page.pressKey('j', { ctrl: true })
+      await sleep(600)
+    }
+
+    /* ---- 文风面板：粘一段存样本 ---- */
+    await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.dock .tabs button')).find((x) => /文风/.test(x.textContent))
+      if (!b) return false
+      b.click()
+      return true
+    `)
+    await page.waitFor("document.querySelector('.st')", { timeout: 8000, label: '文风面板' })
+    await sleep(400)
+
+    const learnBox = await page.evaluate("return (document.querySelector('.st .learn') || {}).innerText || ''")
+    const flatLearn = learnBox.replace(/\s+/g, ' ')
+    check('⚠ 文风面板有「让 AI 学我的文风」这一块', /让 AI 学我的文风/.test(flatLearn), flatLearn.slice(0, 60))
+    check('⚠ 明说样本存在作品目录的哪里（作者的目录是公开的）', /记忆\/文风样本/.test(flatLearn), flatLearn.slice(0, 80))
+    check('⚠ 支持导入 docx / pdf / txt / md 四种', /\.docx \/ \.pdf \/ \.txt \/ \.md/.test(flatLearn))
+    check('有粘贴文字的框（不想导文件时直接粘）', await page.evaluate("return !!document.querySelector('.st .learn .paste')"))
+
+    const sample = '雨下了整夜。他站在檐下，没动。"进来吧。"屋里的人说。'
+    const named = await page.evaluate(`
+      const ta = document.querySelector('.st .learn .paste')
+      const nm = document.querySelector('.st .learn .nm-input')
+      if (!ta || !nm) return false
+      const set = (el, v) => {
+        el.focus()
+        el.value = v
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      set(ta, ${JSON.stringify(sample)})
+      set(nm, '旧稿·雨夜')
+      return true
+    `)
+    check('样本名与粘贴框都能填', named)
+    await sleep(200)
+    await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.st .learn button')).find((x) => /存为样本/.test(x.textContent))
+      if (b) b.click()
+      return true
+    `)
+    await page.waitFor("document.querySelector('.st .samples .srow')", { timeout: 8000, label: '样本进列表' })
+    const srow = await page.evaluate("return (document.querySelector('.st .samples .srow') || {}).innerText || ''")
+    check('⚠ 粘的文字真的存成了样本（列表里出现 + 带字数）', /旧稿/.test(srow) && /\d+\s*字/.test(srow), srow.replace(/\s+/g, ' '))
+
+    /* 「让 AI 学」按钮：AI 层开着 + 有勾选，就该可点（不点，点了要发请求） */
+    const canLearn = await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.st .learn button')).find((x) => /让 AI 学/.test(x.textContent))
+      return b ? !b.disabled : null
+    `)
+    check('⚠ 有样本且 AI 已解锁时「让 AI 学并出要点」可点（没样本时不该可点）', canLearn === true, String(canLearn))
+
+    /* ---- 删样本：拦一道应用内确认，确认后真的从列表消失 ---- */
+    await page.evaluate(`
+      const b = document.querySelector('.st .samples .srow button')
+      if (b) b.click()
+      return true
+    `)
+    await sleep(450)
+    const confirmShown = await page.evaluate(`
+      const d = document.querySelector('.dlg')
+      return d ? d.innerText.includes('旧稿') : false
+    `)
+    check('⚠ 删样本先摊开名单确认（那是作品目录里的真文件，不是内存里的一条记录）', confirmShown)
+    if (confirmShown) {
+      await page.evaluate(`
+        const b = Array.from(document.querySelectorAll('.dlg button')).find((x) => /删除|确定|确认/.test(x.textContent))
+        if (b) b.click()
+        return true
+      `)
+      await sleep(700)
+    }
+    const gone = await page.evaluate("return !document.querySelector('.st .samples .srow')")
+    check('确认之后样本真的从列表消失', gone)
+
+    /* ---- AI 指令对话框 ---- */
+    await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.dock .tabs button')).find((x) => /候选/.test(x.textContent))
+      if (!b) return false
+      b.click()
+      return true
+    `)
+    await sleep(500)
+    const opened = await page.evaluate(`
+      const b = Array.from(document.querySelectorAll('.dock button')).find((x) => /让 AI 写 \\/ 扩写/.test(x.textContent))
+      if (!b) return false
+      b.click()
+      return true
+    `)
+    check('⚠ 候选区有「＋ 让 AI 写 / 扩写…」入口', opened)
+    await page.waitFor(
+      "Array.from(document.querySelectorAll('.dialog')).some((d) => /给 AI 下指令/.test(d.innerText))",
+      { timeout: 8000, label: 'AI 指令对话框' }
+    )
+
+    const DIALOG = `
+      Array.from(document.querySelectorAll('.dialog')).find((d) => /给 AI 下指令/.test(d.innerText))
+    `
+    const dlgTxt = await page.evaluate(`const d = ${DIALOG}; return d ? d.innerText : ''`)
+    const flatDlg = dlgTxt.replace(/\s+/g, ' ')
+    check('⚠ 指令框里有「扩写」（作者要的就是能下扩写指令）', /扩写/.test(flatDlg), flatDlg.slice(0, 90))
+    check('⚠ 明写「动哪一段」，且给的是人话（不是空白 / 不是「undefined」）',
+      /动哪一段/.test(flatDlg) && !/undefined|NaN/.test(flatDlg), flatDlg.slice(0, 120))
+    check('有目标字数（「写得详细点」等于没说）', /目标字数/.test(flatDlg))
+    check('⚠ 脚注重申「点了采纳才写进正文」（跟所有 AI 功能同一条铁律）', /点了采纳才会写进正文/.test(flatDlg))
+    check('⚠ 大指令框够高（不是两行输入框）：8 行 textarea',
+      await page.evaluate(`const d = ${DIALOG}; const t = d && d.querySelector('textarea.ins'); return !!t && t.rows >= 6`))
+
+    /* 扩写：没有选区时要明说退化到本章最后一段 —— 这一屏正文有 60 段，必须给出字数 */
+    await page.evaluate(`
+      const d = ${DIALOG}
+      const sel = d.querySelector('select.mode-sel')
+      sel.value = 'expand'
+      sel.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    `)
+    await sleep(350)
+    const scope = await page.evaluate(`const d = ${DIALOG}; return (d.querySelector('.scope-box') || {}).innerText || ''`)
+    check('⚠ 扩写没选区时说出来「将对本章最后一段扩写」并给字数（静默换目标是 bug）',
+      /本章最后一段/.test(scope) && /\d+\s*字/.test(scope), scope.replace(/\s+/g, ' '))
+
+    await page.pressKey('Escape')
+    await sleep(400)
+    check('Esc 能关掉指令框（不用去找×）',
+      await page.evaluate(`return !Array.from(document.querySelectorAll('.dialog')).some((d) => /给 AI 下指令/.test(d.innerText))`))
+
+    await page.screenshot(join(SHOTS, '08e-style-and-prompt.png'))
+  }
+
   /* ---------- 8. 报错汇总 ---------- */
   section('8. 控制台与网络')
   const realErrors = page.consoleErrors.filter((e) => !/favicon/i.test(e))

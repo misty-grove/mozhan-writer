@@ -5,8 +5,11 @@ import { settings } from '@/core/settings'
 import { currentChapter, saveNow, state } from '@/stores/workspace'
 import { selectedText, setDockTab } from '@/stores/editor'
 import { estimateTokens } from '@/core/util'
+import AiPromptDialog from './AiPromptDialog.vue'
 
 const openId = ref('')
+/** 两行输入框写不下的时候，走这个对话框（模式 + 大指令框 + 目标字数） */
+const showAi = ref(false)
 const instruction = ref('')
 const candidates = ref(2)
 const mode = ref<'continue' | 'rewrite' | 'expand' | 'shrink' | 'tone' | 'generate' | 'fix'>('continue')
@@ -135,6 +138,11 @@ async function run() {
           <button class="primary" :disabled="aiState.generating || !currentChapter" @click="run">
             {{ aiState.generating ? '生成中…' : '生成并放入候选区' }}
           </button>
+          <!-- 两行不够写的时候走这里：模式 + 大指令框 + 目标字数，
+               并且会把「这次对哪一段动手」明写出来（AI 不知道你指哪段是最常见的翻车） -->
+          <button class="text small nowrap" title="打开大指令框：写清楚要什么、扩多少字" @click="showAi = true">
+            详细指令…
+          </button>
           <button v-if="aiState.generating" @click="cancelGenerate">停止</button>
         </div>
         <div v-if="tip" class="small warn-text">{{ tip }}</div>
@@ -143,6 +151,8 @@ async function run() {
         <div v-if="aiState.streaming" class="stream small">{{ aiState.streaming.slice(-600) }}</div>
       </div>
     </template>
+
+    <AiPromptDialog v-if="showAi" @close="showAi = false" />
   </div>
 </template>
 

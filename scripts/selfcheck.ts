@@ -77,6 +77,8 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { installMemoryFs } from './memfs'
 import { buildScaleWork } from './corpus'
 import { condenseOutline, parseSettingSheet, sanitizeName, settingGenPrompt } from '@/core/worldbuild'
+import { CN_PUNCT_RULE, normalizeDialogQuotes } from '@/core/quotes'
+import { parseStyleNotes, sanitizeSampleName, styleLearnPrompt } from '@/core/styleLearn'
 
 /**
  * 读工程内的源文件（静态断言用）。
@@ -2675,6 +2677,66 @@ async function main() {
     check('⚠ 沙盒落盘：不许再出现「正在存就直接 return」的丢弃路径', !/if \([^)]*persisting[^)]*\)\s*return/.test(sbx))
     check('沙盒落盘：真正写 IndexedDB 的只有一轮（并发守卫还在）', sbx.includes('persisting = true') && sbx.includes('persisting = false') && sbx.includes('async function writeOnce'))
     check('沙盒落盘：基线跟着导出一起进镜像（「已同步」刷新后才站得住）', sbx.includes('baseline,') && /baseline = fingerprints\(files\)/.test(sbx))
+  }
+
+  /* 60. 中文引号 · 文风学习（导入 / 粘贴 / 让 AI 学）· AI 指令对话框
+
+     作者提的三件事，这里逐条钉住行为（不只是扫源码扫到就算）：
+       - 模型写中文对话爱吐英文直引号 → 结果侧成对兜底 + 提示词侧先说清；
+       - 文风要能「给材料让 AI 学」→ 样本存作品目录、AI 归纳的要点先进候选区；
+       - 生成 / 扩写要给得下长指令 → 一个真正的对话框，并且写明「动哪一段」。 */
+  {
+    /* ---- 引号：成对转换，代码块不动 ---- */
+    check('⚠ AI 结果：英文直引号成对换成中文双引号', normalizeDialogQuotes('他说"跟我走"，转身就走。') === '他说“跟我走”，转身就走。')
+    check('引号：连着两句对话各自成对', normalizeDialogQuotes('"走吗？""走。"') === '“走吗？”“走。”')
+    check('⚠ 引号：代码块里的引号一个都不动（那是语法，改了就是 bug）', normalizeDialogQuotes('```\nlet s = "hi"\n```') === '```\nlet s = "hi"\n```')
+    check('引号：行内代码里的引号不动', normalizeDialogQuotes('用 `say "hi"` 这句') === '用 `say "hi"` 这句')
+    check('引号：落单的引号原样留下（英寸符号 / 半截话，硬改成 “ 只会更难懂）', normalizeDialogQuotes('屏幕 24" 宽') === '屏幕 24" 宽')
+    check('引号：没有引号的文本原样返回（不夹带任何别的改动）', normalizeDialogQuotes('今天天气不错。') === '今天天气不错。')
+    check('⚠ 引号规则写进了提示词（让模型第一遍就写对，不只靠兜底）', CN_PUNCT_RULE.includes('“') && CN_PUNCT_RULE.includes('禁止使用英文直引号'))
+
+    const ai = readSrc('src/stores/ai.ts')
+    check('⚠ 生成结果入库前做引号兜底（直连与 Agent 两条路都要有）', ai.includes('normalizeDialogQuotes(text.trim())') && ai.includes('text: normalizeDialogQuotes(text)'))
+    check('提示词：只有正文类模式带标点规范（表格 / 清单类不该被塞）', ai.includes('PROSE_MODES') && ai.includes("['continue', 'generate', 'rewrite', 'expand', 'shrink', 'tone', 'fix']"))
+    check('文风要点也是候选（AI 产出先进候选区，采纳才落盘）', ai.includes("mode: 'style'") && /adoptStyleNotes/.test(ai))
+
+    /* ---- 文风学习 ---- */
+    check('⚠ 样本名洗成合法文件名（作者的标题里什么字符都有）', sanitizeSampleName('旧稿/雨夜:第1版').endsWith('.md') && !/[\\/:*?"<>|]/.test(sanitizeSampleName('旧稿/雨夜:第1版')))
+    check('样本名：空名字也有个落点（不能生成一个无名文件）', sanitizeSampleName('') === '未命名样本.md')
+    const lp = styleLearnPrompt([{ name: '旧稿·雨夜', text: '雨下了整夜。' }], '对话要短，禁止心理独白')
+    check('⚠ 文风学习提示词：带上样本与作者指令', lp.includes('旧稿·雨夜') && lp.includes('对话要短，禁止心理独白'))
+    check('⚠ 文风学习提示词：明确不许复述样本情节（复述了续写就会照抄）', lp.includes('不得复述') || lp.includes('不复述'))
+    check('文风学习提示词：要的是「能照做的规则」，不是评语', lp.includes('不要怎么做') && lp.includes('禁忌'))
+    check('文风要点：剥掉代码围栏再交给作者', parseStyleNotes('```\n## 句式\n- 短句为主\n```') === '## 句式\n- 短句为主')
+
+    const ctx = readSrc('src/core/context.ts')
+    check('⚠ 上下文：作者导入的样本与学出的要点都会进上下文（学了才有用）', ctx.includes("id: 'style-imported'") && ctx.includes("id: 'style-notes'") && ctx.includes('styleSampleFiles'))
+
+    const sp = readSrc('src/components/StylePanel.vue')
+    check('⚠ 文风面板：能导入 word / pdf / txt / md', /accept="\.docx,\.pdf,\.txt,\.md/.test(sp) && sp.includes('importStyleFile'))
+    check('文风面板：能直接粘贴文字存样本', sp.includes('savePasted') && sp.includes('存为样本'))
+    check('⚠ 文风面板：删样本前先摊名单确认（那是作者作品目录里的真文件）', sp.includes('askConfirm') && sp.includes('removeStyleSample'))
+    // 锚点要认**调用处**：光认 import 那行的 pushStyleNotesCandidate，
+    // 面板改成直接落盘了闸门照样绿 —— 认 `pushStyleNotesCandidate(notes)` 才盯得住。
+    check('⚠ 文风面板：AI 学出来的要点先进候选区，不直接写进作品', sp.includes('pushStyleNotesCandidate(notes)') && sp.includes('setDockTab'))
+    // TDZ：`{ immediate: true }` 的 watch 在 setup 期同步跑 loadAll，它碰到 samples / picked
+    // 这些 ref 必须已经声明过 —— 否则生产构建里整个面板白屏，typecheck 看不出来。
+    // 锚点要挑**不会撞注释**的那串：注释里既写了 `immediate: true` 也写了 `loadAll, { immediate: true }`，
+    // 拿它们当锚点会让闸门永远为真 —— 只能认 `watch([` 开头那一行（注释里是 `watch(...,`，撞不上）。
+    const spWatchLine = sp.split('\n').filter((l) => l.includes('watch(['))[0] || ''
+    const spSamples = sp.indexOf('const samples = ref')
+    check('⚠ 文风面板：样本相关 ref 声明在 immediate watch 之前（TDZ 白屏那类坑）',
+      spSamples >= 0 && spWatchLine.includes('{ immediate: true }') && sp.indexOf(spWatchLine) > spSamples)
+
+    /* ---- AI 指令对话框 ---- */
+    const dlg = readSrc('src/components/AiPromptDialog.vue')
+    check('⚠ AI 指令对话框：生成 / 扩写都走它（不挤在两行输入框里）', dlg.includes("v: 'expand'") && dlg.includes("v: 'generate'"))
+    check('AI 指令对话框：能指定目标字数（「写得详细点」等于没说）', dlg.includes('目标字数') && dlg.includes('targetChars'))
+    check('⚠ AI 指令对话框：明写「这次动哪一段」（AI 不知道你指哪段是最常见的翻车）', dlg.includes('动哪一段') && dlg.includes('scopeText'))
+    // 同理：文件头的注释里也写了「本章最后一段」，拿它当锚点等于没验。
+    check('⚠ AI 指令对话框：扩写没有选区时退化成本章最后一段，且说出来（静默换目标是 bug）', dlg.includes('将对**本章最后一段**') && dlg.includes('lastParagraph'))
+    check('AI 指令对话框：不用原生 prompt / confirm', !/window\.(prompt|confirm)/.test(dlg))
+    check('AI 指令对话框：产出先进候选区（跟所有 AI 功能同一条铁律）', dlg.includes('setDockTab') && dlg.includes("生成并放入候选区"))
   }
 
   console.log(failures === 0 ? '\n全部通过 ✅' : `\n失败 ${failures} 项 ❌`)

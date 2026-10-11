@@ -7,6 +7,8 @@ import { planDelivery, rememberLayoutSkill, layoutGuide } from '@/core/agentSkil
 import { agentAvailable, agentCancel, agentRun, agentSyncSkills } from '@/platform/aiBridge'
 import { aiEnabled, agentPreferred, apiReady, settings } from '@/core/settings'
 import { countWords, fmtTime, uid } from '@/core/util'
+import { CN_PUNCT_RULE, normalizeDialogQuotes } from '@/core/quotes'
+import { parseStyleNotes, writeStyleNotes } from '@/core/styleLearn'
 import { readChapterBody } from '@/core/workspace'
 import { updateMemorySection } from '@/core/memory'
 import { readMemoryFile, writeMemoryFile } from '@/core/memory'
@@ -277,10 +279,11 @@ export async function generateWithAgent(args: GenerateArgs): Promise<Candidate[]
       aiState.error = res.cancelled ? '已取消' : 'Agent 没有产出内容（看看「过程」里卡在哪一步）'
       return out
     }
-    const c: Candidate = {
-      id: uid('cand'),
-      title: `${labelOf(args.mode)}${args.engineTag === 'agent' ? ' · Agent' : ''}`,
-      text,
+      const c: Candidate = {
+        id: uid('cand'),
+        title: `${labelOf(args.mode)}${args.engineTag === 'agent' ? ' · Agent' : ''}`,
+        // Agent 那一路同样会吐英文直引号（它底下还是同一个模型），兜底必须在两条路上都有
+        text: normalizeDialogQuotes(text),
       model: `DSH ${settings.ai.agentProfile || 'headless'}`,
       skill: args.skill || '',
       createdAt: fmtTime(new Date()),
@@ -397,7 +400,7 @@ export async function generate(args: GenerateArgs): Promise<Candidate[]> {
       // 纠错模式约定模型在正文后面追加「=== 改动说明 ===」清单。
       // 必须在这里拆开：c.text 只留正文，说明进 c.notes ——
       // 不然「采纳」会把说明文字一起写进正文，作者还得手动删。
-      let body = text.trim()
+      let body = normalizeDialogQuotes(text.trim())
       let notes = ''
       if (args.mode === 'fix') {
         const MARK = '=== 改动说明 ==='
@@ -444,9 +447,13 @@ function labelOf(mode: Candidate['mode']): string {
     outline: '大纲生成',
     generate: '生成',
     fix: '纠错',
-    setting: '设定生成'
+    setting: '设定生成',
+    style: '文风要点'
   }[mode]
 }
+
+/** 产出正文（而不是表格/清单）的模式：这些要带中文标点规范 */
+const PROSE_MODES = ['continue', 'generate', 'rewrite', 'expand', 'shrink', 'tone', 'fix']
 
 function buildInstruction(args: GenerateArgs): string {
   const ch = wsStore.currentChapter.value
@@ -484,10 +491,43 @@ ${ch?.meta.emotion ? `情绪走向：${ch.meta.emotion}` : ''}`
     summary: `任务：为当前章节生成 100–200 字的摘要（事实优先，含谁在场、发生了什么、结尾留了什么悬念）。不要抒情，不要评价。`,
     outline: `任务：根据上下文与题目要求，产出分章大纲（章标题 + 每章功能 + 本章目标 + 出场人物 + 涉及设定 + 情绪走向 + 钩子）。`
   }
-  return `${head}\n\n${tail[args.mode] || ''}${args.instruction ? `\n\n补充要求：${args.instruction}` : ''}\n\n以下是上下文：`
+  // 正文类任务都带上中文标点规范：模型写中文对话爱吐英文直引号，
+  // 光靠「中文小说」这几个字压不住，得把规则写出来（结果侧还有一层兜底，见 normalizeDialogQuotes）。
+  const rule = PROSE_MODES.includes(args.mode) ? `\n\n${CN_PUNCT_RULE}` : ''
+  return `${head}\n\n${tail[args.mode] || ''}${args.instruction ? `\n\n补充要求：${args.instruction}` : ''}${rule}\n\n以下是上下文：`
 }
 
 /* ------------------------------------------------------------------ 采纳 */
+
+/**
+ * 文风学习的结果：不是正文，落点是 记忆/文风要点.md。
+ * **仍然先进候选区** —— AI 产出一律先给作者看，作者点了采纳才落盘，这条没有例外。
+ */
+export function pushStyleNotesCandidate(text: string, model = ''): Candidate {
+  const c: Candidate = {
+    id: uid('cand'),
+    title: '文风要点（AI 从样本里归纳）',
+    text: normalizeDialogQuotes(text),
+    model: model || settings.ai.model || 'AI',
+    skill: '',
+    createdAt: fmtTime(new Date()),
+    mode: 'style',
+    targetChapterId: wsStore.state.currentId,
+    tokens: Math.ceil(text.length / 2)
+  }
+  aiState.candidates.unshift(c)
+  return c
+}
+
+/** 采纳文风要点：写进 记忆/文风要点.md（之后每次装配上下文都会带上） */
+export async function adoptStyleNotes(c: Candidate): Promise<boolean> {
+  if (!wsStore.state.ref) return false
+  const notes = parseStyleNotes(c.text)
+  if (!notes) return false
+  await writeStyleNotes(wsStore.state.ref, notes)
+  c.applied = true
+  return true
+}
 
 export async function adoptSummary(c: Candidate, key: string) {
   if (!wsStore.state.ref) return

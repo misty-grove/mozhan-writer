@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import fs from '@/platform'
-import { aiState, adoptSummary, appendToChapter, clearCandidates, enabled, removeCandidate } from '@/stores/ai'
+import { aiState, adoptStyleNotes, adoptSummary, appendToChapter, clearCandidates, enabled, removeCandidate } from '@/stores/ai'
 import { applyApi, editorState } from '@/stores/editor'
 import { currentChapter, state } from '@/stores/workspace'
 import { askConfirm } from '@/stores/dialog'
@@ -11,8 +11,11 @@ import { parseOutlineMarkdown, toOutlineMarkdown } from '@/core/outline'
 import { parseSettingSheet } from '@/core/worldbuild'
 import { defaultBody } from '@/core/codex'
 import { addEntry, codexState, refreshCodex } from '@/stores/codex'
+import AiPromptDialog from './AiPromptDialog.vue'
 
 const openId = ref('')
+/** 从候选区直接下指令（生成 / 扩写都走同一个对话框） */
+const showAi = ref(false)
 /** 纠错候选的「改动说明」当前展开的是哪一张 */
 const openNotesId = ref('')
 /** 采纳失败的原因。桌面壳与部分 WebView 会禁掉原生 alert，反馈只能落在自己身上 */
@@ -201,6 +204,12 @@ async function adopt(c: any) {
   applyLocal(c)
 }
 
+/** 文风要点：落点是 记忆/文风要点.md，不是正文 —— 写进去之后每次生成都会带上 */
+async function adoptStyle(c: any) {
+  const ok = await adoptStyleNotes(c)
+  notice.value = ok ? '' : '这份要点是空的，没能写入。'
+}
+
 function copyText(c: any) {
   navigator.clipboard?.writeText(c.text)
 }
@@ -226,6 +235,13 @@ function saveFile(c: any) {
     </div>
 
     <div v-if="!enabled" class="small dim">未配置 API，候选区为空。</div>
+
+    <div v-else class="row">
+      <button class="text small" title="打开大指令框：让 AI 生成或扩写某一段" @click="showAi = true">
+        ＋ 让 AI 写 / 扩写…
+      </button>
+      <span class="small dim">会先说清「动哪一段」，再让你写要求</span>
+    </div>
 
     <!-- Agent 的「过程」：读了哪些文件、调到哪一步。这是 Agent 档与直连 API 最大的体验差别 —— 
          不显示的话，作者等两分钟只看到一段文本，完全不知道 AI 到底翻了什么。 -->
@@ -278,6 +294,7 @@ function saveFile(c: any) {
         <button v-if="c.mode === 'summary'" class="primary" @click="adopt(c)">写入记忆库</button>
         <button v-else-if="c.mode === 'outline'" class="primary" @click="adoptOutline(c)">写入大纲文件</button>
         <button v-else-if="c.mode === 'setting'" class="primary" @click="adoptSetting(c)">写入设定库</button>
+        <button v-else-if="c.mode === 'style'" class="primary" @click="adoptStyle(c)">写入 记忆/文风要点.md</button>
         <template v-else>
           <button class="primary" @click="adopt(c)">{{ adoptLabel(c) }}</button>
           <button @click="copyText(c)">复制</button>
@@ -286,6 +303,8 @@ function saveFile(c: any) {
         <button class="text small danger-text" @click="removeOne(c)">删除</button>
       </div>
     </div>
+
+    <AiPromptDialog v-if="showAi" @close="showAi = false" />
   </div>
 </template>
 
