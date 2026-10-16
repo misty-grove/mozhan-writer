@@ -42,7 +42,7 @@ async function openFolder() {
 <template>
   <div class="ap">
     <div class="spread">
-      <b class="tt">资料</b>
+      <b class="tt">文件</b>
       <div class="row small">
         <button v-for="g in GROUPS" :key="g" class="text small" :class="{ on: group === g }" @click="group = g">{{ g }}</button>
       </div>

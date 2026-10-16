@@ -14,7 +14,6 @@ export type DockTab =
   | 'foreshadow'
   | 'style'
   | 'check'
-  | 'stats'
 
 /** 主区视图（P2 新增：除写作外的全局视图） */
 export type MainView = 'write' | 'board' | 'graph' | 'timeline' | 'stats'

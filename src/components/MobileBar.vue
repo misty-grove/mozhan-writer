@@ -3,8 +3,9 @@
  * 手机底部工具条（只在移动端渲染）。
  *
  * 两副面孔：
- *  - 平时是**导航条**：目录 / 大纲 / 撤销 / 保存 / 资料。放在底部而不是顶上，
- *    是因为单手握持时拇指够得着的是屏幕下半部 —— 顶栏在手机上是够不着的。
+ *  - 平时是**导航条**：目录 / 大纲 / 撤销 / 保存 / 资料 / 查找 / 导入。放在底部而不是顶上，
+ *    是因为单手握持时拇指够得着的是屏幕下半部 —— 顶栏在手机上是够不着的，
+ *    而顶栏上的「查找 / 导入稿件」都标了 data-mobile="hide"，等于手机上没有入口。
  *  - 软键盘弹起时变成**标点条**，贴在键盘上沿：中文写作一天要敲几百次的
  *    「」——…… 这些，用系统输入法翻页找非常打断思路。
  *
@@ -21,6 +22,7 @@ import { settings } from '@/core/settings'
 
 const emit = defineEmits<{
   (e: 'outline'): void
+  (e: 'import'): void
 }>()
 
 const kb = computed(() => keyboardHeight.value)
@@ -102,6 +104,10 @@ const saveText = computed(() => (state.saving ? '保存中' : state.dirty ? '未
       >
         资料
       </button>
+      <!-- 查找：EditorPane 顶部的查找替换条。顶栏那颗在手机上是隐藏的，这里补上 -->
+      <button data-ic="⌕" @click="editorState.findOpen = true">查找</button>
+      <!-- 导入：顶栏「导入稿件」在手机上同样被收起来了，从底栏重新给一条路 -->
+      <button data-ic="⤓" @click="emit('import')">导入</button>
     </template>
   </div>
 </template>

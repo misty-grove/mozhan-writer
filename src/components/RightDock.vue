@@ -14,7 +14,6 @@ import CodexPanel from './CodexPanel.vue'
 import ForeshadowPanel from './ForeshadowPanel.vue'
 import StylePanel from './StylePanel.vue'
 import CheckPanel from './CheckPanel.vue'
-import StatsPanel from './StatsPanel.vue'
 
 const tabs = computed(() => {
   // AI 相关页签只有在配置了 API 后才出现；技能页签例外 —— 它常驻。
@@ -33,9 +32,10 @@ const tabs = computed(() => {
     { k: 'foreshadow', label: '伏笔' },
     { k: 'check', label: '检查' },
     { k: 'style', label: '文风' },
-    { k: 'stats', label: '统计' },
     { k: 'memory', label: '记忆' },
-    { k: 'asset', label: '资料' },
+    // 「统计」不在 dock：主视图有一份完整的（多健康度/自定义规则/分布图），
+    // 这里再放一份只会让人疑心「两个数字怎么不一样」。
+    { k: 'asset', label: '文件' },
     { k: 'search', label: '搜索' }
   ] as Array<{ k: any; label: string }>
   return [...ai, ...base]
@@ -69,7 +69,6 @@ function pick(k: string) {
         <ForeshadowPanel v-else-if="current === 'foreshadow'" key="foreshadow" />
         <CheckPanel v-else-if="current === 'check'" key="check" />
         <StylePanel v-else-if="current === 'style'" key="style" />
-        <StatsPanel v-else-if="current === 'stats'" key="stats" />
         <MemoryPanel v-else-if="current === 'memory'" key="memory" />
         <AssetPanel v-else-if="current === 'asset'" key="asset" />
         <SearchPanel v-else-if="current === 'search'" key="search" />

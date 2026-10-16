@@ -23,7 +23,6 @@ import CodexPanel from '@/components/CodexPanel.vue'
 import ForeshadowPanel from '@/components/ForeshadowPanel.vue'
 import StylePanel from '@/components/StylePanel.vue'
 import CheckPanel from '@/components/CheckPanel.vue'
-import StatsPanel from '@/components/StatsPanel.vue'
 import SearchPanel from '@/components/SearchPanel.vue'
 import MemoryPanel from '@/components/MemoryPanel.vue'
 import BoardView from '@/views/BoardView.vue'
@@ -169,13 +168,8 @@ async function main() {
     check('检查面板无运行时错误', errs.length === 0, errs.join(' | '))
   }
 
-  /* 统计看板 */
-  {
-    const { text, errs } = await mount('StatsPanel', StatsPanel, 100)
-    check('统计面板渲染总字数', text.includes('总字数'), text.slice(0, 120))
-    check('统计面板渲染近 30 天柱状图', !!document.querySelector('.bars'))
-    check('统计面板无运行时错误', errs.length === 0, errs.join(' | '))
-  }
+  /* 统计看板：dock 不再设「统计」页签（主视图 StatsView 是它的超集），
+     StatsPanel 组件随之删除，这里不再挂载。主视图统计的冒烟由 e2e §5 视图轮询覆盖。 */
 
   /* 记忆库：离线自动整理（Task #8） */
   {

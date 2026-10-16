@@ -395,9 +395,7 @@ try {
     const len = await page.evaluate("return document.querySelector('.dock .body')?.innerText.trim().length || 0")
     check(`面板「${t}」可渲染`, len > 0, `innerText 长度 ${len}`)
   }
-  await page.clickByText('.dock .tabs button', '统计')
-  await sleep(400)
-  await shot(page, '07-dock-stats.png')
+  // 「统计」不设 dock 页签：主视图有一份完整的，dock 里那份是它的子集（冗余盘点第 1 条）
   await page.clickByText('.dock .tabs button', '设定')
   await sleep(400)
   await shot(page, '08-dock-codex.png')
@@ -1346,7 +1344,7 @@ try {
   const barLabels = await page.evaluate(
     "return Array.from(document.querySelectorAll('.mobile-bar button')).map((b) => b.textContent.trim()).join('/')"
   )
-  check('手机：底部工具条给出五个拇指区动作', barLabels === '目录/大纲/撤销/保存/资料', barLabels)
+  check('手机：底部工具条给出七个拇指区动作（顶栏隐藏的查找/导入在这条路上）', barLabels === '目录/大纲/撤销/保存/资料/查找/导入', barLabels)
   const barH = await page.evaluate("return Math.round(document.querySelector('.mobile-bar button').getBoundingClientRect().height)")
   check('手机：工具条按钮触摸目标 ≥ 44px', barH >= 44, `${barH}px`)
   check(

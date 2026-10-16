@@ -343,7 +343,7 @@ watch(
     </div>
 
     <!-- 手机底部工具条：拇指区。键盘弹起时它变成标点条贴在键盘上沿 -->
-    <MobileBar v-if="mobileEnv && !focus" @outline="showOutline = true" />
+    <MobileBar v-if="mobileEnv && !focus" @outline="showOutline = true" @import="showImport = true" />
 
     <!-- 钉住的参考窗：切到别的视图也还在 -->
     <ReferencePane
