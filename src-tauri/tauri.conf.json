@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "墨栈写作台",
+  "productName": "墨栈写作台-精简测试版",
   "identifier": "dev.writerbench.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -52,7 +52,7 @@
         ],
         "displayLanguageSelector": false,
         "compression": "lzma",
-        "startMenuFolder": "墨栈写作台"
+        "startMenuFolder": "墨栈写作台（精简测试版）"
       },
       "wix": {
         "language": "zh-CN"
