@@ -8,6 +8,7 @@ import { countWords, estimateTokens } from './util'
 import { DIRS, VOLUME_OUTLINE_FILE, listAssetDocs, loadSummaries, readChapterBody, readVolumeOutline } from './workspace'
 import { cachedIndex, search, splitPassages } from './retrieve'
 import { collectStyleSamples, readStyleNotes } from './styleLearn'
+import { hasRealOutline } from './worldbuild'
 import type { AssetDoc, Chapter, ContextItem, Volume } from './types'
 
 export interface BuildOptions {
@@ -39,6 +40,20 @@ async function tryRead(ref: DirRef, path: string[]): Promise<string> {
 }
 
 async function findFirstDoc(ref: DirRef, root: string, keywords: string[]): Promise<{ id: string; text: string } | null> {
+  // 作者看得见的根目录优先：`.mdAI文件/` 里那份是新建作品时的模板，
+  // 它常年是空的，抢在作者真写的大纲前面，AI 就读了个空。
+  let entries: { name: string; kind: 'file' | 'dir' }[] = []
+  try {
+    entries = await fs().listDir(ref, [root])
+  } catch {
+    entries = []
+  }
+  const rootHit = entries.find((e) => e.kind === 'file' && e.name.endsWith('.md') && keywords.some((k) => e.name.includes(k)))
+  if (rootHit) {
+    const text = await tryRead(ref, [root, rootHit.name])
+    // 稿纸模板（只有标题和提示行）不算大纲：喂给模型是零信息量，还占上下文
+    if (hasRealOutline(text)) return { id: [root, rootHit.name].join('/'), text }
+  }
   const docs = await listAssetDocs(ref)
   const hit = docs.filter((d) => d.group === root).find((d) => keywords.some((k) => d.name.includes(k)))
   if (!hit) return null

@@ -122,8 +122,10 @@ async function writeFile() {
   clampShape()
   busy.value = true
   try {
-    await fs().writeFile(state.ref, ['大纲', '大纲.md'], toOutlineMarkdown(finalSkeleton.value, state.info.brief))
-    msg.value = '已写入 大纲/大纲.md'
+    // 全书大纲只有一个家：大纲/剧情大纲.md —— 跟「导入大纲」的落点一致，
+    // 免得作者在目录里看到两份大纲，不知道哪份算数。
+    await fs().writeFile(state.ref, ['大纲', '剧情大纲.md'], toOutlineMarkdown(finalSkeleton.value, state.info.brief))
+    msg.value = '已写入 大纲/剧情大纲.md'
   } catch (e: any) {
     msg.value = `写入失败：${e?.message || e}`
   } finally {
@@ -273,7 +275,12 @@ async function askRecommend() {
 
 onMounted(async () => {
   try {
-    existing.value = await fs().readFile(state.ref!, ['大纲', '大纲.md'])
+    // 老作品的大纲可能还叫 大纲.md：先读新家，没有再读旧的（只读一次，不迁移文件）
+    try {
+      existing.value = await fs().readFile(state.ref!, ['大纲', '剧情大纲.md'])
+    } catch {
+      existing.value = await fs().readFile(state.ref!, ['大纲', '大纲.md'])
+    }
     if (existing.value.trim() && parsed.value) {
       tab.value = 'existing'
       syncShape(parsed.value)
@@ -325,7 +332,7 @@ onMounted(async () => {
           rows="7"
           class="md"
           spellcheck="false"
-          placeholder="粘贴或直接编辑 大纲/大纲.md 的内容"
+          placeholder="粘贴或直接编辑 大纲/剧情大纲.md 的内容"
         ></textarea>
 
         <template v-else-if="tab === 'recommend'">
@@ -400,7 +407,7 @@ onMounted(async () => {
         </div>
 
         <p class="small dim" v-if="tab !== 'recommend'">
-          章纲只铺「第x章」坑位、目标留白 —— 自己写、从 Word / md 导入、或让 AI 补，三种都行；写进 大纲/大纲.md 后随时手改。
+          章纲只铺「第x章」坑位、目标留白 —— 自己写、从 Word / md 导入、或让 AI 补，三种都行；写进 大纲/剧情大纲.md 后随时手改。
         </p>
         <div v-if="msg" class="small dim">{{ msg }}</div>
 

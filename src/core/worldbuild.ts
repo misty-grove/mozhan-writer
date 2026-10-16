@@ -245,17 +245,32 @@ export function savedTags(): string {
  * 不做花哨的解析：模型看得懂 Markdown。这里只做两件真正省 token 的事 ——
  * 砍掉表格的分隔行（`| --- | --- |` 对模型零信息量，而且很长），
  * 再把过长的章纲列表截断（设定生成不需要 60 章的细节）。
+ *
+ * **新建作品预置的稿纸算空**：只有标题、引用提示和分隔行的大纲，对模型是
+ * 零信息量，还会挤占上下文 —— 宁可返回空串，让调用方显示「还没写大纲」。
  */
 export function condenseOutline(md: string, limit = OUTLINE_LIMIT): string {
   const lines = String(md || '')
     .split(/\r?\n/)
     .map((l) => l.trimEnd())
     .filter((l) => !/^\|[\s:|-]+\|$/.test(l.trim()))
+  if (!hasRealOutline(md)) return ''
   const text = lines.join('\n').trim()
   if (!text) return ''
   if (text.length <= limit) return text
   // 截断时留个话给模型：别把「没写到的章」当成「这本书就到这」
   return `${text.slice(0, limit)}\n……（大纲较长，此处截断；后面还有内容，不要当作故事已结束）`
+}
+
+/**
+ * 这份大纲有没有**实质内容**：标题（# …）、引用提示（> …）、分隔行之外
+ * 还有别的东西，才算数。新建作品时预置的就是这么一张稿纸。
+ */
+export function hasRealOutline(md: string): boolean {
+  return String(md || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .some((l) => l && !/^#{1,6}\s/.test(l) && !/^>/.test(l))
 }
 
 /** Windows 保留名（写文件会被系统拒） */

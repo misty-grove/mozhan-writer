@@ -3,6 +3,7 @@ import fs, { hasTauri, mobileEnv, type DirRef } from '@/platform'
 import * as ws from '@/core/workspace'
 import { autoSnapshot, listSnapshots, createSnapshot, readSnapshot } from '@/core/snapshots'
 import { countWords, fmtTime } from '@/core/util'
+import { updateMeta } from '@/core/frontmatter'
 import { settings, touchRecent } from '@/core/settings'
 import { addTodayWords, todayWords } from '@/core/workspace'
 import { resetNav } from '@/stores/editor'
@@ -373,10 +374,16 @@ export async function newVolume(name: string) {
   await refresh(false)
 }
 
-export async function renameChapter(id: string, title: string) {
-  if (!state.ref) return
+/**
+ * 重命名章节：标题进 frontmatter，文件名里的标题部分跟着换（章号不动）。
+ * 返回新的章节 id；没改成（空标题 / 没这章）返回 null。
+ */
+export async function renameChapter(id: string, title: string): Promise<string | null> {
+  if (!state.ref) return null
   const old = allChapters.value.find((c) => c.id === id)
-  if (!old) return
+  if (!old) return null
+  const v = (title || '').trim()
+  if (!v) return null
   // 先把在途改动落盘，再做「写新文件 + 删旧文件」这套动作。两个原因：
   //  1. 下面读的是磁盘上的正文，不落盘的话「改个章名」会把刚写的几段悄悄丢掉（自动保存是防抖的）；
   //  2. 旧文件上还挂着没关干净的写入流时，OPFS 的 removeEntry 会抛 NoModificationAllowedError。
@@ -384,17 +391,22 @@ export async function renameChapter(id: string, title: string) {
   const parts = id.split('/')
   const parent = parts.slice(0, -1)
   const order = Number(/第\s*(\d+)\s*章/.exec(old.file)?.[1] || 1)
-  const newFile = ws.chapterFileName(order, title)
+  const newFile = ws.chapterFileName(order, v)
   if (newFile === old.file) {
-    old.title = title
-    await ws.saveChapter(state.ref, id, old.id === state.currentId ? state.content : await ws.readChapterBody(state.ref, id), { title })
-    return
+    old.title = v
+    // saveChapter 走序列化器：标题里带冒号/引号时会自动加引号，
+    // 早先的 raw.replace(/^title:.*$/) 会直接产出坏 YAML，下次读取标题就丢了。
+    await ws.saveChapter(state.ref, id, old.id === state.currentId ? state.content : await ws.readChapterBody(state.ref, id), { title: v })
+    return id
   }
   const raw = await ws.readChapterText(state.ref, id)
-  await fs().writeFile(state.ref, [...parent, newFile], raw.replace(/^title:.*$/m, `title: ${title}`))
+  const next = updateMeta(raw, { title: v, updated: fmtTime(new Date()) })
+  await fs().writeFile(state.ref, [...parent, newFile], next)
   await fs().remove(state.ref, id.split('/'))
   await refresh(false)
-  await selectChapter([...parent, newFile].join('/'))
+  const newId = [...parent, newFile].join('/')
+  await selectChapter(newId)
+  return newId
 }
 
 export async function removeChapter(id: string) {
@@ -423,18 +435,26 @@ export async function setStatus(id: string, status: ChapterStatus) {
 
 export async function saveChapterCard(id: string, meta: any) {
   if (!state.ref) return
-  await ws.saveChapter(state.ref, id, id === state.currentId ? state.content : await ws.readChapterBody(state.ref, id), meta)
+  // 标题变了就连文件名一起改：只改 frontmatter 的话，磁盘上躺着的还是旧标题，
+  // 作者在资源管理器里看到的跟软件里显示的会对不上。
+  let targetId = id
   const ch = allChapters.value.find((c) => c.id === id)
-  if (ch) {
-    ch.title = meta.title ?? ch.title
-    if (meta.status) ch.status = meta.status
-    if (meta.tags) ch.tags = meta.tags
-    Object.assign(ch.meta, {
-      target: meta.target ?? ch.meta.target,
-      characters: meta.characters ?? ch.meta.characters,
-      settings: meta.settings ?? ch.meta.settings,
-      emotion: meta.emotion ?? ch.meta.emotion,
-      notes: meta.notes ?? ch.meta.notes
+  if (meta.title && ch && meta.title !== ch.title) {
+    const newId = await renameChapter(id, meta.title)
+    if (newId) targetId = newId
+  }
+  await ws.saveChapter(state.ref, targetId, targetId === state.currentId ? state.content : await ws.readChapterBody(state.ref, targetId), meta)
+  const cur = allChapters.value.find((c) => c.id === targetId)
+  if (cur) {
+    cur.title = meta.title ?? cur.title
+    if (meta.status) cur.status = meta.status
+    if (meta.tags) cur.tags = meta.tags
+    Object.assign(cur.meta, {
+      target: meta.target ?? cur.meta.target,
+      characters: meta.characters ?? cur.meta.characters,
+      settings: meta.settings ?? cur.meta.settings,
+      emotion: meta.emotion ?? cur.meta.emotion,
+      notes: meta.notes ?? cur.meta.notes
     })
   }
 }

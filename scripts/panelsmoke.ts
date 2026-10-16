@@ -396,8 +396,8 @@ async function main() {
     writeBtn?.click()
     await new Promise((r) => setTimeout(r, 250))
     check('写入后提示成功', (el.textContent || '').includes('已写入'), (el.textContent || '').slice(0, 200))
-    const omdRaw = await fs().readFile(state.ref!, ['大纲', '大纲.md']).catch(() => '')
-    check('大纲/大纲.md 写成了 Markdown 表格', omdRaw.includes('| 章节 | 目标 | 字数 |'), omdRaw.slice(0, 80))
+    const omdRaw = await fs().readFile(state.ref!, ['大纲', '剧情大纲.md']).catch(() => '')
+    check('大纲/剧情大纲.md 写成了 Markdown 表格', omdRaw.includes('| 章节 | 目标 | 字数 |'), omdRaw.slice(0, 80))
     check('大纲对话框无运行时错误', errs.length === 0, errs.join(' | '))
   }
 

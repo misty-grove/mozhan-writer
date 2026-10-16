@@ -5,7 +5,9 @@ import { state } from '@/stores/workspace'
 import { openAssetRequest } from '@/stores/editor'
 import fs from '@/platform'
 
-const group = ref('设定')
+// 默认停在「大纲」：作者最常翻的是大纲（设定往往是空的，记忆由软件自己写），
+// 默认停在一个空分类上，看着就像「导进去了却看不到」
+const group = ref('大纲')
 const openId = ref('')
 const text = ref('')
 const dirty = ref(false)

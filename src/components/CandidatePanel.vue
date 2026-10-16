@@ -103,7 +103,7 @@ function applyWholeChapter(c: any) {
 }
 
 /**
- * 大纲候选的落点不是正文，是 大纲/大纲.md。
+ * 大纲候选的落点不是正文，是 大纲/剧情大纲.md（跟「导入大纲」同一个家）。
  * AI 输出必须能被解析成「## 卷 + | 章节 | 目标 |」表格才写 ——
  * 解析不了就如实说，并把原文留给作者复制，绝不把半成品盖掉人家的大纲文件。
  */
@@ -118,7 +118,7 @@ async function adoptOutline(c: any) {
     return
   }
   try {
-    await fs().writeFile(state.ref, ['大纲', '大纲.md'], toOutlineMarkdown(s, state.info.brief))
+    await fs().writeFile(state.ref, ['大纲', '剧情大纲.md'], toOutlineMarkdown(s, state.info.brief))
   } catch (e: any) {
     notice.value = `写入大纲失败：${e?.message || e}`
     return

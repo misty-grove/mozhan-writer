@@ -12,6 +12,7 @@
 import { computed, ref, watch } from 'vue'
 import { docxToMarkdown } from '@/core/docxRead'
 import { applyOutline, parseOutlineText, treeStats, type OutlineMode } from '@/core/importOutline'
+import { cleanOutlineNoise } from '@/core/textClean'
 import { decodeText } from '@/core/importDoc'
 import { DIRS } from '@/core/workspace'
 import { refresh, state } from '@/stores/workspace'
@@ -23,13 +24,24 @@ const text = ref('')
 const fileName = ref('')
 const source = ref('') // 编码 / 转换说明
 const warnings = ref<string[]>([])
-const createChapters = ref(true)
+const createChapters = ref(false)
 const overwrite = ref(false)
 const busy = ref(false)
 const msg = ref('')
 const err = ref('')
 const picked = ref<boolean[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
+
+/**
+ * 「顺带建章节坑位」的默认值跟着模式走：
+ *  - 卷纲模式默认**不建** —— 作者要的是「这卷发生了什么」，章节他自己排；
+ *    默认建一堆空章，目录当场被撑爆（用户原话：导入卷纲后目录应该只有
+ *    分卷故事梗概和可以新建章节的区域）。
+ *  - 章纲模式默认建 —— 那一整份文档就是按章组织的，对不上的建个坑位才接得上。
+ */
+watch(mode, (m) => {
+  createChapters.value = m === 'chapter'
+})
 
 const tree = computed(() => parseOutlineText(text.value))
 const stats = computed(() => treeStats(tree.value))
@@ -50,12 +62,12 @@ const MODE_HINT: Record<OutlineMode, { label: string; where: string; how: string
   book: {
     label: '全书大纲',
     where: `${DIRS.outline}/剧情大纲.md`,
-    how: '整篇写进大纲文件，AI 续写时会当作最高层上下文。'
+    how: '整篇写进大纲文件，AI 续写时会当作最高层上下文；之后在大纲处随时翻看。'
   },
   volume: {
     label: '卷纲',
     where: '正文/第XX卷/卷纲.md',
-    how: '每卷建目录并写卷纲；卷下的章顺带建成空章（正文不动）。'
+    how: '每卷建目录并写卷纲（分卷故事梗概）；默认不动章节，要连章节坑位一起建再勾下面的框。'
   },
   chapter: {
     label: '章纲',
@@ -78,6 +90,7 @@ async function loadFile(f: File | Blob, name: string) {
   warnings.value = []
   try {
     const buf = await f.arrayBuffer()
+    let raw = ''
     if (/\.docx$/i.test(name)) {
       const r = docxToMarkdown(buf)
       if (!r.text.trim()) {
@@ -85,7 +98,7 @@ async function loadFile(f: File | Blob, name: string) {
         msg.value = ''
         return
       }
-      text.value = r.text
+      raw = r.text
       source.value = `Word：${r.paragraphs} 段 · ${r.tables} 张表`
       warnings.value = r.warnings
     } else if (/\.doc$/i.test(name)) {
@@ -94,10 +107,12 @@ async function loadFile(f: File | Blob, name: string) {
       return
     } else {
       const dec = decodeText(buf)
-      text.value = dec.text
+      raw = dec.text
       source.value = `文本：${dec.encoding}${dec.suspicious ? '（有乱码风险）' : ''}`
       if (dec.suspicious) warnings.value = [`解码时出现 ${dec.suspicious} 个无法识别的字符，建议先另存为 UTF-8。`]
     }
+    // AI 生成的文档常带零宽字符、起强调作用的引号、emoji —— 落盘前先洗干净
+    text.value = cleanOutlineNoise(raw)
     fileName.value = name
     msg.value = `读好了：${stats.value.volumes} 卷 · ${stats.value.chapters} 章`
   } catch (e2: any) {
@@ -238,7 +253,7 @@ async function doImport() {
         <div v-if="msg" class="small dim">{{ msg }}</div>
         <p v-if="err" class="err-box small">{{ err }}</p>
 
-        <div class="row">
+        <div class="row act-bar">
           <button class="primary" :disabled="busy || !ready" @click="doImport">
             <template v-if="mode === 'book'">写入全书大纲</template>
             <template v-else-if="mode === 'volume'">导入 {{ pickedVolumes.length }} 卷的卷纲</template>
@@ -289,6 +304,19 @@ label.inline input {
   gap: 2px;
   background: var(--bg-panel);
   margin: 8px 0;
+}
+/* 手机上弹窗是底部抽屉：预览区按视口高度收，别把「导入」按钮顶出屏幕 */
+html.ua-mobile .prev {
+  max-height: 32vh;
+}
+/* 底部操作条吸底：内容再长也够得着「导入」 */
+.act-bar {
+  position: sticky;
+  bottom: 0;
+  margin-top: auto;
+  padding: 10px 0 2px;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--line-soft);
 }
 .ch-row {
   display: flex;

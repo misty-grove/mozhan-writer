@@ -34,6 +34,7 @@ import {
 import { download } from '@/core/exportDoc'
 import { fmtTime } from '@/core/util'
 import { makeZipCompressed, textBytes, type ZipEntry } from '@/core/zip'
+import { scaffoldFiles } from '@/core/workspace'
 import { openWork, saveNow, state as wsState } from '@/stores/workspace'
 
 export type SandboxOrigin = '' | 'import' | 'created' | 'restored'
@@ -235,7 +236,11 @@ export async function createSandbox(name: string): Promise<{ ok: boolean; text: 
   sandbox.busy = true
   try {
     const clean = String(name || '').trim() || '未命名作品'
-    await begin(clean, 'created', [], [])
+    // 预置结构和磁盘新建完全一致（大纲模板、记忆文件都带上）——
+    // 少了它们，沙盒里「大纲」分类是空的、全书大纲入口也不出现，
+    // 作者会以为「在大纲处看到全书大纲」这件事没兑现。
+    // 基线仍为空（origin='created'）：整座沙盒都还没落磁盘，一切都该导出。
+    await begin(clean, 'created', scaffoldFiles(), [])
     sandbox.message = '沙盒作品已建好，结构和其他作品一样。写完记得导出。'
     return { ok: true, text: sandbox.message }
   } catch (e: any) {

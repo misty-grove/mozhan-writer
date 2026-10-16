@@ -698,19 +698,20 @@ try {
   await shot(page, '11b-outline-import.png')
 
   await page.clickByText('.dialog button', '导入 1 卷的卷纲')
-  await page.waitFor("document.querySelectorAll('.tree-body .ch').length === 6", { timeout: 20000, label: '章节树加上导入的 2 章' })
+  // 2026-10 起：卷纲模式只建卷 + 写卷纲，**不顺带建空章** ——
+  // 作者的原话：导入卷纲后目录应该只有分卷故事梗概和可以新建章节的区域。
+  // 建坑位是「章纲」模式的活（见下面第二次导入）。
+  await page.waitFor("document.querySelectorAll('.tree-body .ch').length === 4", { timeout: 20000, label: '章节树不动（卷纲模式不建章）' })
   const afterVol = await page.evaluate(`return await window.__fs.walk(${JSON.stringify(WORK + '/正文')})`)
   const volFile = afterVol.filter((x) => x.includes('第一卷') && x.endsWith('卷纲.md'))
   check('卷目录与卷纲都建出来了', volFile.length === 1, JSON.stringify(afterVol))
   const vgRaw = await page.evaluate(`return await window.__fs.read(${JSON.stringify(volFile[0] || '')})`)
   check('卷纲的 front matter 里写了卷目标', vgRaw.includes('target: 回到原点'), vgRaw.split('\n').slice(0, 10).join(' | '))
   check('卷纲正文里有章节安排', vgRaw.includes('第一章 雪夜') && vgRaw.includes('埋下旧怨'), vgRaw.slice(0, 200))
-  const volChs = afterVol.filter((x) => x.includes('第一卷') && /第\d+章.*\.md$/.test(x))
-  check('卷下建成 2 个空章坑位', volChs.length === 2, JSON.stringify(volChs))
-  const emptyRaw = await page.evaluate(`return await window.__fs.read(${JSON.stringify(volChs[0] || '')})`)
-  check('坑位是空的 —— 导入大纲不替作者写正文', !emptyRaw.includes('雪夜回乡'), emptyRaw.slice(0, 160))
+  const volChsInVolMode = afterVol.filter((x) => x.includes('第一卷') && /第\d+章.*\.md$/.test(x))
+  check('卷纲模式不建章节坑位（要建坑位走章纲模式）', volChsInVolMode.length === 0, JSON.stringify(volChsInVolMode))
 
-  // 同一个大纲再导一次，这次写章纲：只补「本章目标」，不重复建章
+  // 同一个大纲再导一次，这次写章纲：对不上的章节才建坑位，只补「本章目标」
   await page.evaluate(
     "const b = Array.from(document.querySelectorAll('.dialog button')).find((x) => (x.textContent || '').trim() === '章纲'); b.click(); return true"
   )
@@ -718,10 +719,13 @@ try {
   await page.clickByText('.dialog button', '导入 2 条章纲')
   await page.waitFor(
     "document.querySelectorAll('.tree-body .ch').length === 6",
-    { timeout: 20000, label: '章纲导入后章数不变（没有重复建章）' }
+    { timeout: 20000, label: '章纲导入后补上 2 个坑位（4 + 2）' }
   )
   const chTreeNow = await page.evaluate("return document.querySelectorAll('.tree-body .ch').length")
-  check('章纲导入后章数还是 6（对上已有章节只补目标）', chTreeNow === 6, `章节数 ${chTreeNow}`)
+  check('章纲导入后补 2 个坑位（原来 4 章没被动）', chTreeNow === 6, `章节数 ${chTreeNow}`)
+  const afterCh = await page.evaluate(`return await window.__fs.walk(${JSON.stringify(WORK + '/正文')})`)
+  const volChs = afterCh.filter((x) => x.includes('第一卷') && /第\d+章.*\.md$/.test(x))
+  check('章纲模式下对不上的章节建成坑位', volChs.length === 2, JSON.stringify(volChs))
   const chTargetRaw = await page.evaluate(`return await window.__fs.read(${JSON.stringify(volChs[0] || '')})`)
   check('章纲写进了「本章目标」', chTargetRaw.includes('target: 立住人物与处境'), chTargetRaw.split('\n').slice(0, 10).join(' | '))
   check('章纲没有动正文', !chTargetRaw.includes('雪夜回乡'), chTargetRaw.slice(0, 200))
@@ -2052,8 +2056,8 @@ try {
         const flat = seen.replace(/\s+/g, ' ')
         check('摊开了输入来源（大纲 / 标签两行都在）', /大纲/.test(flat) && /标签/.test(flat), flat.slice(0, 70))
 
-        /* 这个沙盒作品建出来时带的是**空大纲模板**（新建作品会写 大纲/大纲.md），
-           所以正常结果是「读到 大纲/大纲.md」。要是文件确实没有，报「还没读到大纲」
+        /* 这个沙盒作品建出来时带的是**稿纸大纲模板**（新建作品会写 大纲/剧情大纲.md），
+           所以正常结果是「读到 大纲/剧情大纲.md」。要是文件确实没有，报「还没读到大纲」
            也算如实 —— 不能接受的是停在「读取中…」。 */
         const outlineSeg = flat.split('标签')[0] || ''
         const honest = /大纲\/|还没读到大纲/.test(outlineSeg) && !/读取中/.test(outlineSeg)

@@ -45,17 +45,17 @@ const SCAFFOLD: PathSeg[] = [
 
 const INFO_ORDER = ['title', 'author', 'brief', 'targetWords', 'created', 'updated']
 
+/**
+ * 新建作品时预置的剧情大纲。
+ *
+ * 早先这里是「一句话梗概 / 主线推进 / 关键转折 / 结局走向」四件套 ——
+ * 看着整整齐齐，作者对着四个空标题反而一个字都写不出来：那是项目报告的
+ * 骨架，不是人想故事的脑子。现在给的就是一张稿纸加一句人话。
+ */
 export const DEFAULT_BOOK_OUTLINE = `# 剧情大纲（全书）
 
-> 在这里写全书主线。AI 续写时会把它作为最高层 context，建议保持简洁、可分段。
-
-## 一句话梗概
-
-## 主线推进
-
-## 关键转折
-
-## 结局走向
+> 这部书实际会发生什么，写在这里。想到哪写到哪，不用凑格式。
+> AI 续写时会把它当作最高层上下文 —— 你写得多具体，它续得多贴。
 `
 
 export const DEFAULT_MEMORY_FILES: Record<string, string> = {
@@ -101,14 +101,33 @@ export async function writeWorkInfo(ref: DirRef, info: WorkInfo) {
 
 /* ------------------------------------------------------------------ 创建 / 初始化 */
 
+/**
+ * 新建作品时预置的**文件**（路径相对作品根目录）。
+ *
+ * 磁盘路径（createWork）和浏览器沙盒（createSandbox 走内存宿主，没有 mkdir
+ * 也能靠文件路径带出目录）共用这一份 —— 两边结构必须一模一样，
+ * 否则「沙盒里写得好好的，导出到磁盘上反而缺文件」。
+ */
+export function scaffoldFiles(): Array<{ path: PathSeg; text: string }> {
+  const files: Array<{ path: PathSeg; text: string }> = [
+    // 两份剧情大纲：作者可见的 大纲/剧情大纲.md（日常读写的家）+
+    // .mdAI文件/ 里的模板兜底（老作品与外部 Agent 约定的位置，见 context.ts）
+    { path: [DIRS.outline, '剧情大纲.md'], text: DEFAULT_BOOK_OUTLINE },
+    { path: [DIRS.outline, '.mdAI文件', '剧情大纲.md'], text: DEFAULT_BOOK_OUTLINE },
+    { path: [DIRS.outline, '.mdAI文件', '分卷大纲.md'], text: '# 分卷大纲\n' },
+    { path: [DIRS.outline, '.mdAI文件', '人物大纲.md'], text: '# 人物大纲\n' }
+  ]
+  for (const [file, content] of Object.entries(DEFAULT_MEMORY_FILES)) {
+    files.push({ path: [DIRS.memory, file], text: content })
+  }
+  return files
+}
+
 export async function createWork(parent: DirRef, name: string, info: Partial<WorkInfo> = {}): Promise<DirRef> {
   const clean = sanitizeName(name)
   for (const d of SCAFFOLD) await fs().mkdir(parent, [clean, ...d])
-  await fs().writeFile(parent, [clean, DIRS.outline, '.mdAI文件', '剧情大纲.md'], DEFAULT_BOOK_OUTLINE)
-  await fs().writeFile(parent, [clean, DIRS.outline, '.mdAI文件', '分卷大纲.md'], '# 分卷大纲\n')
-  await fs().writeFile(parent, [clean, DIRS.outline, '.mdAI文件', '人物大纲.md'], '# 人物大纲\n')
-  for (const [file, content] of Object.entries(DEFAULT_MEMORY_FILES)) {
-    await fs().writeFile(parent, [clean, DIRS.memory, file], content)
+  for (const f of scaffoldFiles()) {
+    await fs().writeFile(parent, [clean, ...f.path], f.text)
   }
   const finalInfo = { ...defaultWorkInfo(clean), ...info, title: info.title || clean }
   await fs().writeFile(parent, [clean, DIRS.info], serializeDoc(finalInfo, `# ${finalInfo.title}\n`, INFO_ORDER))
@@ -227,6 +246,7 @@ export async function scanWork(ref: DirRef, onProgress?: (done: number, total: n
       order: parseOrder(dir.name) || i + 1,
       chapters: chs,
       wordCount: chs.reduce((s, c) => s + c.wordCount, 0),
+      hasOutline: entries.some((e) => e.name === VOLUME_OUTLINE_FILE),
       meta
     })
   }
@@ -336,7 +356,7 @@ export async function createChapter(
   ref: DirRef,
   volumeId: string | null,
   title: string,
-  opts: { order?: number } = {}
+  opts: { order?: number; patch?: Record<string, any> } = {}
 ): Promise<Chapter> {
   const parent: PathSeg = volumeId ? volumeId.split('/') : [DIRS.body]
   const existing = await safeList(ref, parent)
@@ -349,7 +369,8 @@ export async function createChapter(
   const meta = {
     title: title || `第${order}章`,
     status: '待写' as ChapterStatus,
-    updated: fmtTime(new Date())
+    updated: fmtTime(new Date()),
+    ...(opts.patch || {})
   }
   await fs().writeFile(ref, path, serializeDoc(meta, '', CH_ORDER))
   return await loadChapter(ref, path, volumeId)
@@ -367,9 +388,12 @@ export async function createVolume(ref: DirRef, name: string, order?: number): P
   await fs().writeFile(
     ref,
     [...vPath, VOLUME_OUTLINE_FILE],
-    serializeDoc({ title: name, target: '', conflict: '', line: '', hook: '' }, `# ${name}\n\n## 本卷目标\n\n## 核心冲突\n\n## 推进线\n\n## 卷末钩子\n`)
+    // 卷纲 = 一张稿纸：这一卷实际会发生什么，写下来。早先的
+    // 「## 本卷目标 / ## 核心冲突 / ## 推进线 / ## 卷末钩子」四个空标题，
+    // 是项目报告的骨架，作者对着它写不出故事。
+    serializeDoc({ title: name, target: '', conflict: '', line: '', hook: '' }, `# ${name}\n\n> 这一卷里实际会发生什么，写在这里。导入的卷纲也会落到这个文件。\n`)
   )
-  return { id: vPath.join('/'), name: dirName, dir: dirName, order: n, chapters: [], wordCount: 0, meta: {} }
+  return { id: vPath.join('/'), name: dirName, dir: dirName, order: n, chapters: [], wordCount: 0, hasOutline: true, meta: {} }
 }
 
 export async function renameVolume(ref: DirRef, volumeId: string, newName: string): Promise<string> {

@@ -54,6 +54,8 @@ export interface Volume {
   chapters: Chapter[]
   wordCount: number
   meta: VolumeMeta
+  /** 卷目录里有 卷纲.md（写过分卷大纲）—— 目录树上据此显示「分卷大纲」入口 */
+  hasOutline?: boolean
 }
 
 export interface WorkInfo {

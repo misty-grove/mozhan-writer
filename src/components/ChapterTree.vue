@@ -21,7 +21,10 @@ import { filterTree, flattenTree, highlightParts, matchChapter, type ChapterMatc
 import { editorState } from '@/stores/editor'
 import { askConfirm, askText } from '@/stores/dialog'
 import { chapterPlaceholder } from '@/core/dialog'
-import { parseOrder } from '@/core/workspace'
+import { parseOrder, readAsset, readVolumeOutline } from '@/core/workspace'
+import { findBookOutlinePath } from '@/core/importOutline'
+import { hasRealOutline } from '@/core/worldbuild'
+import OutlineViewDialog from './OutlineViewDialog.vue'
 
 const collapsed = ref<Record<string, boolean>>({})
 const editingId = ref('')
@@ -30,8 +33,54 @@ const dragging = ref<string | null>(null)
 const dragOver = ref<string | null>(null)
 const filterBox = ref<HTMLInputElement | null>(null)
 const treeBody = ref<HTMLElement | null>(null)
+/** 翻阅中的大纲：null = 没开；'book' = 全书大纲；卷 id = 那卷的分卷大纲 */
+const viewing = ref<null | 'book' | string>(null)
+const viewingText = ref('')
 
 const pct = computed(() => (state.info.targetWords ? Math.min(100, Math.round((totalWords.value / state.info.targetWords) * 100)) : 0))
+
+/** 大纲文件在不在、叫什么：写没写过 大纲/剧情大纲.md（导入全书大纲 / 大纲面板都会落在这里） */
+const bookOutline = ref<{ path: string; text: string } | null>(null)
+/** 从扫描产物里找「作者可见的那份全书大纲」—— 比轮询文件更跟手，openWork / refresh 都会更新 assets */
+const bookOutlineFile = computed(() =>
+  state.assets.find((a) => a.group === '大纲' && !a.id.includes('.mdAI文件') && /剧情大纲|全书/.test(a.name)) || null
+)
+async function loadBookOutline() {
+  if (!state.ref) {
+    bookOutline.value = null
+    return
+  }
+  try {
+    const path = await findBookOutlinePath(state.ref)
+    const text = await readAsset(state.ref, path.join('/'))
+    // 稿纸模板（只有标题和提示行）不算大纲：别给作者一个点开什么都没有的入口
+    bookOutline.value = hasRealOutline(text) ? { path: path.join('/'), text } : null
+  } catch {
+    bookOutline.value = null
+  }
+}
+// 两条触发线：换作品（assets 会整个换掉）与大纲文件出现/消失（导入、大纲面板写入）
+watch([() => state.ref?.id, bookOutlineFile], () => void loadBookOutline(), { immediate: true })
+
+/** 大纲第一行当标题（「# 书名」或书名行），没有就用文件名 */
+const bookOutlineTitle = computed(() => {
+  const t = bookOutline.value?.text || ''
+  const h = /^#\s+(.+)$/m.exec(t)?.[1]?.trim()
+  return h || '全书大纲'
+})
+
+async function openBookOutline() {
+  await loadBookOutline()
+  viewingText.value = bookOutline.value?.text || ''
+  viewing.value = 'book'
+}
+
+async function openVolumeOutline(volumeId: string, name: string) {
+  if (!state.ref) return
+  const { body } = await readVolumeOutline(state.ref, volumeId)
+  viewingText.value = `# ${name}\n\n${body}`
+  viewing.value = volumeId
+}
 
 /** 新章会排到的章号：跟 core 的 createChapter 用同一个 parseOrder，别两边各算一套 */
 function nextOrder(volumeId: string | null): number {
@@ -341,6 +390,13 @@ async function removeVol(volumeId: string, name: string) {
       <template v-if="tree.query.maxWords !== null"> · &lt;{{ tree.query.maxWords }} 字</template>
     </div>
 
+    <!-- 全书大纲：导入大纲 / 大纲面板写的 大纲/剧情大纲.md，写作时随时翻 -->
+    <div v-if="bookOutline" class="outline-entry" @click="openBookOutline">
+      <span class="oe-ic">📖</span>
+      <span class="oe-title">{{ bookOutlineTitle }}</span>
+      <span class="small dim">全书大纲 · 点开翻看</span>
+    </div>
+
     <div
       ref="treeBody"
       class="tree-body"
@@ -389,6 +445,11 @@ async function removeVol(volumeId: string, name: string) {
             </span>
             <span class="meta small dim">{{ ch.wordCount }} 字</span>
             <span class="st" :class="'s-' + ch.status">{{ ch.status }}</span>
+            <span class="ops">
+              <button class="btn-icon" title="重命名" @click.stop="startRename(ch)">✎</button>
+              <button class="btn-icon" title="复制章" @click.stop="duplicate(ch.id)">⧉</button>
+              <button class="btn-icon" title="删除章" @click.stop="removeCh(ch)">×</button>
+            </span>
           </template>
         </div>
       </div>
@@ -421,6 +482,15 @@ async function removeVol(volumeId: string, name: string) {
           </div>
         </div>
         <div v-show="filtering || !collapsed[hit.volume.id]" @dragover.prevent @drop="dropIntoVolume(hit.volume.id)">
+          <!-- 分卷大纲：挂在每卷第一章的位置，不算一章，点开看这卷的故事梗概 -->
+          <div
+            v-if="hit.volume.hasOutline"
+            class="vol-outline-entry"
+            @click="openVolumeOutline(hit.volume.id, hit.volume.name)"
+          >
+            <span class="oe-ic">📑</span>
+            <span>分卷大纲 · {{ hit.volume.name }}</span>
+          </div>
           <div
             v-for="ch in hit.chapters"
             :key="ch.id"
@@ -455,6 +525,7 @@ async function removeVol(volumeId: string, name: string) {
               <span class="meta small dim">{{ ch.wordCount }} 字</span>
               <span class="st" :class="'s-' + ch.status">{{ ch.status }}</span>
               <span class="ops">
+                <button class="btn-icon" title="重命名" @click.stop="startRename(ch)">✎</button>
                 <button class="btn-icon" title="复制章" @click.stop="duplicate(ch.id)">⧉</button>
                 <button class="btn-icon" title="删除章" @click.stop="removeCh(ch)">×</button>
               </span>
@@ -471,6 +542,13 @@ async function removeVol(volumeId: string, name: string) {
       <br />
       列表内：↑↓ 移动 · Enter 打开 · F2 重命名 · ←→ 折叠展开 · Home/End 到头尾
     </div>
+
+    <OutlineViewDialog
+      v-if="viewing"
+      :title="viewing === 'book' ? bookOutlineTitle : state.volumes.find((v) => v.id === viewing)?.name || '分卷大纲'"
+      :text="viewingText"
+      @close="viewing = null"
+    />
   </div>
 </template>
 
@@ -602,6 +680,62 @@ async function removeVol(volumeId: string, name: string) {
 }
 .ch:hover .ops {
   display: flex;
+}
+/* 手机上没鼠标悬停：操作按钮得常驻，否则「改个章名」得碰运气 */
+html.ua-mobile .ch .ops {
+  display: flex;
+}
+html.ua-mobile .ch {
+  padding-right: 4px;
+}
+html.ua-mobile .ch .ops .btn-icon {
+  min-width: 30px;
+  min-height: 30px;
+}
+
+/* 全书大纲入口：贴在目录最顶端，写作时一抬眼就能翻 */
+.outline-entry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 10px 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.outline-entry:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.outline-entry .oe-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 分卷大纲：每卷第一章的上头，不算一章 */
+.vol-outline-entry {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 12px 4px 28px;
+  padding: 6px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.vol-outline-entry:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.oe-ic {
+  flex: 0 0 auto;
 }
 .st {
   font-size: 11px;

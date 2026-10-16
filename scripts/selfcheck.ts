@@ -35,6 +35,7 @@ import * as stats from '@/core/stats'
 import { cnNumber, decodeText, headingOrder, importChapters, listLooseTxt, splitChapters } from '@/core/importDoc'
 import { docxToMarkdown } from '@/core/docxRead'
 import { applyOutline, findBookOutlinePath, parseOutlineText } from '@/core/importOutline'
+import { cleanHeadingTitle, cleanOutlineNoise } from '@/core/textClean'
 import { strToU8, zipSync } from 'fflate'
 import { bytesText, crc32, makeZip, makeZipCompressed, readZip, textBytes } from '@/core/zip'
 import {
@@ -1385,6 +1386,26 @@ async function main() {
   }
   }
 
+  /* 40b. 沙盒新建：预置结构必须和磁盘新建一模一样
+   *
+   * 作者实报的现象：浏览器里「新建作品（沙盒）」建出来的作品，
+   * 资料面板「大纲」分类是空的、章节目录顶端也没有「全书大纲」入口 ——
+   * 因为 createSandbox 传给内存根的是空文件数组，ensureStructure 只建目录。
+   * 「导入大纲后就能在大纲处看到全书大纲」这条诉求，在沙盒这条路上曾经不成立。 */
+  {
+    const files = ws.scaffoldFiles()
+    const paths = files.map((f) => f.path.join('/'))
+    check('沙盒新建：预置里有作者可见的 大纲/剧情大纲.md', paths.includes('大纲/剧情大纲.md'), paths.join(' | '))
+    check('沙盒新建：预置里有 .mdAI文件 兜底模板（外部 Agent 约定的位置）', paths.includes('大纲/.mdAI文件/剧情大纲.md'), paths.join(' | '))
+    check(
+      '沙盒新建：剧情大纲是「稿纸」不是四件套空标题',
+      (files.find((f) => f.path.join('/') === '大纲/剧情大纲.md')?.text || '').includes('想到哪写到哪'),
+      ''
+    )
+    const sbx = readSrc('src/stores/sandbox.ts')
+    check('⚠ 沙盒新建：createSandbox 带上 scaffoldFiles（不许再传空数组）', /begin\(clean, 'created', scaffoldFiles\(\)/.test(sbx), '')
+  }
+
   /* 41. 大作品规模：行为对拍 + 耗时预算（P4）
    *
    * 这一节盯的是「百万字级」才露头的退化写法。两道真题（300 章 / 85 万字实测）：
@@ -1618,6 +1639,49 @@ async function main() {
       check('层级：一个标题都没有时整篇留作纯文本，不硬凑卷章', parseOutlineText('就一段话，没有标题。').plain)
       check('层级：三级标题并进所属章，不另起一章', parseOutlineText('# 卷\n## 第一章\n### 细节\n内容').volumes[0].chapters.length === 1)
       check('层级：只有章没有卷时给一个不分卷（章节直接进 正文/）', parseOutlineText('## 第一章 雪夜').volumes[0].name === '')
+
+      /* 42.4b AI 生成的大纲文档（2026-10 重写解析器的回归用例）
+         典型形态：书名行 +「# 全书设定」+「## 第X卷（范围）」+ 章节表格。
+         老实现按「# = 卷、## = 章」硬套，整份文档会塌成一卷两章。 */
+      const aiMd = [
+        '《测试之书》全书大纲',
+        '',
+        '# 全书设定',
+        '这是一个关于测试的故事。"主角"获得了一支"神奇的笔"。',
+        '',
+        '## 第一卷 启程（第1章-第40章）',
+        '',
+        '**卷目标**：主角踏上旅程。',
+        '',
+        '| 章节 | 目标 | 字数 |',
+        '| --- | --- | --- |',
+        '| 第一章 奇怪的快递 | 收到神秘包裹 | 3000 |',
+        '| 第二章 夜半警笛 | 出手救人 | 3000 |',
+        '',
+        '## 第二卷 暗流（第41章-第80章）',
+        '',
+        '| 章节 | 目标 | 字数 |',
+        '| --- | --- | --- |',
+        '| 第一章 裂痕 | 激烈争吵 | 3200 |'
+      ].join('\n')
+      const aiTree = parseOutlineText(aiMd)
+      check('AI 大纲：书名从「《…》」行提取，不当成一卷', aiTree.title === '测试之书' && aiTree.volumes.length === 2, JSON.stringify(aiTree.volumes.map((v) => v.name)))
+      check('AI 大纲：「# 全书设定」进大纲正文，不当卷', aiTree.text.includes('全书设定') && !aiTree.volumes.some((v) => v.name.includes('设定')))
+      check('AI 大纲：卷名剥掉「（第1章-第40章）」范围注释', aiTree.volumes[0].name === '第一卷 启程', aiTree.volumes[0].name)
+      check('AI 大纲：卷下表格每行一章（2 + 1）', aiTree.volumes[0].chapters.length === 2 && aiTree.volumes[1].chapters.length === 1)
+      check('AI 大纲：卷目标从「**卷目标**：」行抽出', aiTree.volumes[0].target === '主角踏上旅程。')
+      check('AI 大纲：强调引号被过滤（"主角" "神奇的笔"）', !aiTree.text.includes('"主角"') && !aiTree.text.includes('"神奇的笔"'), aiTree.text.slice(0, 60))
+      check('AI 大纲：Word 导出的「# 第一卷 / ## 第一章」老写法照旧', parseOutlineText('# 第一卷 启程\n## 第一章 雪夜\n正文').volumes[0].chapters.length === 1)
+
+      /* 42.4c 符号过滤：只洗机器味，不动小说对话 */
+      check('过滤：弯引号对话原样保留（「你来了？」含标点）', cleanOutlineNoise('他说："你来了？"').includes('"你来了？"'))
+      check('过滤：直引号里的纯中文短词才当强调去掉', cleanOutlineNoise('"主角"拿到"笔"又拿到"刀"还拿到"灯"').replace(/[^一-龥]/g, '') === '主角拿到笔又拿到刀还拿到灯')
+      check('过滤：直引号里的英文/数字不碰（代码、引用）', cleanOutlineNoise('"TODO"出现"404"还有"v2"再加"x"').includes('"TODO"'))
+      check('过滤：零宽字符清掉（肉眼看不见但会进文件名）', cleanOutlineNoise('标\u200B题\uFEFF名').replace(/\s/g, '') === '标题名')
+      check('过滤：emoji 与装饰符号清掉', !/[\u{1F300}-\u{1FAFF}]/u.test(cleanOutlineNoise('大纲 ✨🎯 完成 ✅')))
+      check('过滤：连续空行压成一个空行（不再三连）', !cleanOutlineNoise('一\n\n\n\n二').includes('\n\n\n'))
+      check('过滤：标题里的范围注释剥掉（卷名专用）', cleanHeadingTitle('第一卷 启程（第1章-第40章）') === '第一卷 启程')
+      check('过滤：标题里的加粗星号剥掉', cleanHeadingTitle('**第一章 雪夜**') === '第一章 雪夜')
 
       /* 42.5 落盘：三种目标各写一遍 */
       const root = memAdapter.createRoot('大纲导入')
@@ -1914,7 +1978,7 @@ async function main() {
     )
     check(
       'AI：大纲候选的落点是大纲文件，不是正文选区（解析不出表格就不许写盘）',
-      /async function adoptOutline[\s\S]{0,400}?parseOutlineMarkdown[\s\S]{0,600}?writeFile\(state\.ref, \['大纲', '大纲\.md'\]/.test(cand)
+      /async function adoptOutline[\s\S]{0,400}?parseOutlineMarkdown[\s\S]{0,600}?writeFile\(state\.ref, \['大纲', '剧情大纲\.md'\]/.test(cand)
     )
     const ctx = readSrc('src/components/ContextPanel.vue')
     check(
@@ -2557,7 +2621,9 @@ async function main() {
 
     // 两者都试完还读不到，才该报「还没读到大纲」
     const emptyRef = await ws.createWork(parent, '没有大纲的作品', {})
-    await fs().remove(emptyRef, ['大纲', '大纲.md'])
+    // 新建作品会在 大纲/ 根下预置一张稿纸（剧情大纲.md），.mdAI文件/ 里还有一份兜底模板
+    await fs().remove(emptyRef, ['大纲', '剧情大纲.md'])
+    await fs().remove(emptyRef, ['大纲', '.mdAI文件', '剧情大纲.md'])
     let found = ''
     try {
       const es = (await fs().listDir(emptyRef, ['大纲'])).filter((e) => e.kind === 'file' && /\.(md|txt)$/i.test(e.name))

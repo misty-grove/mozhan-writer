@@ -14,15 +14,19 @@
  */
 import fs from '@/platform'
 import type { DirRef, PathSeg } from '@/platform'
-import { DIRS, VOLUME_OUTLINE_FILE, createChapter, createVolume, readVolumeOutline, saveChapter, saveVolumeOutline } from './workspace'
+import { DIRS, VOLUME_OUTLINE_FILE, createChapter, createVolume, readVolumeOutline, saveVolumeOutline } from './workspace'
 import { updateMeta } from './frontmatter'
 import { headingOrder } from './importDoc'
 import { fmtTime } from './util'
+import { cleanHeadingTitle, cleanOutlineNoise } from './textClean'
 import type { Chapter, Volume } from './types'
 
 const CJK = '零一二三四五六七八九十百千万两廿卅'
 const VOL_LINE = new RegExp(`^第\\s*([0-9${CJK}]{1,10})\\s*[卷部篇]\\s*[、.．:：]?\\s*(.*)$`)
 const CH_LINE = new RegExp(`^第\\s*([0-9${CJK}]{1,10})\\s*[章回节]\\s*[、.．:：]?\\s*(.*)$`)
+/** 只用来「嗅探语义」：标题文本里含「第X卷」就是卷，含「第X章」就是章 */
+const VOL_SMELL = new RegExp(`第\\s*[0-9${CJK}]{1,10}\\s*[卷部篇]`)
+const CH_SMELL = new RegExp(`第\\s*[0-9${CJK}]{1,10}\\s*[章回节]`)
 const MD_HEAD = /^(#{1,6})\s+(.+?)\s*#*$/
 const ROW = /^\|(.+)\|\s*$/
 const TARGET_LINE = /^(?:\*\*)?(?:本卷目标|卷目标|本章目标|章纲|目标)(?:\*\*)?\s*[：:]\s*(.+)$/
@@ -61,26 +65,38 @@ export interface OutlineTree {
 export const EMPTY_TREE: OutlineTree = { title: '', text: '', volumes: [], plain: true }
 
 interface RawNode {
+  /** 来自 Markdown 标题的层级（# 数）；「第X卷 / 第X章」行按语义记为 1 / 2 */
   level: number
   title: string
   lines: string[]
   rows: string[][]
   target: string
+  /** 这个节点是卷、章、总纲（书名/全书设定）还是细节（并进上一级正文） */
+  role: Role
 }
+
+/** 节点的角色。note = 书名 / 全书设定这类总纲级内容，sub = 并进上一级的细节 */
+type Role = 'volume' | 'chapter' | 'note' | 'sub'
 
 /* ------------------------------------------------------------------ 解析 */
 
 /**
  * Markdown → 卷/章层级树。
  *
- * 层级怎么定：
- *  - `#` / Word 的标题 1 / 「第一卷」→ 卷
- *  - `##` / 标题 2 / 「第一章」→ 章
- *  - 更深一级 → 并进所属章的正文（作者写的小细节不该被当成新章）
- *  - 卷下面挂的表格 → 每行一章（大纲最常见的写法）
+ * 层级怎么定（**语义优先**，这是 2026-10 重写的重点）：
+ *
+ * 作者手里的大纲，尤其是 AI 生成的那些，标题层级从来不按软件的心意来：
+ *  - `# 书名` `## 第一卷 启程` `### 第一章 雪夜`（Word 导出最常见）
+ *  - `# 全书设定` `## 第一卷 启程` + 一张章节表格
+ *  - 老写法：`# 第一卷` `## 第一章`（自检用例 42.4 就是它）
+ *
+ * 老实现按「# = 卷、## = 章」硬套，于是 `## 第一卷` 被当成一章、
+ * `# 书名` 被当成一卷，卷下的章节表格整张吞进「章」里 —— 导入完目录一团乱。
+ * 现在改成：**标题文本先说自己是卷还是章**（「第X卷 / 第X章 / 第X部 / 第X回」），
+ * Markdown 井号只在语义没说清时按相对深度兜底。
  */
 export function parseOutlineText(md: string): OutlineTree {
-  const src = (md || '').replace(/\r\n?/g, '\n')
+  const src = cleanOutlineNoise(md || '')
   const lines = src.split('\n')
 
   const nodes: RawNode[] = []
@@ -88,7 +104,7 @@ export function parseOutlineText(md: string): OutlineTree {
   let cur: RawNode | null = null
   // 开新节点必须就地赋值：TS 不做跨函数的控制流分析，
   // 写在闭包里的 `cur = n` 会让下面 `if (cur)` 被收窄成 never。
-  const NEW = (level: number, title: string) => ({ level, title, lines: [] as string[], rows: [] as string[][], target: '' })
+  const NEW = (level: number, title: string, role: Role): RawNode => ({ level, title, lines: [], rows: [], target: '', role })
 
   for (const raw of lines) {
     const line = raw.trim()
@@ -96,7 +112,7 @@ export function parseOutlineText(md: string): OutlineTree {
 
     const mdH = MD_HEAD.exec(line)
     if (mdH) {
-      cur = NEW(mdH[1].length, mdH[2].trim())
+      cur = NEW(mdH[1].length, cleanHeadingTitle(mdH[2]), 'sub')
       nodes.push(cur)
       continue
     }
@@ -114,16 +130,16 @@ export function parseOutlineText(md: string): OutlineTree {
     const vol = VOL_LINE.exec(line)
     if (vol && line.length <= 60) {
       const order = vol[1]
-      const rest = vol[2].trim()
-      cur = NEW(1, rest ? `第${order}卷 ${rest}` : `第${order}卷`)
+      const rest = cleanHeadingTitle(vol[2])
+      cur = NEW(1, rest ? `第${order}卷 ${rest}` : `第${order}卷`, 'volume')
       nodes.push(cur)
       continue
     }
     const ch = CH_LINE.exec(line)
     if (ch && line.length <= 60) {
       const order = ch[1]
-      const rest = ch[2].trim()
-      cur = NEW(2, rest ? `第${order}章 ${rest}` : `第${order}章`)
+      const rest = cleanHeadingTitle(ch[2])
+      cur = NEW(2, rest ? `第${order}章 ${rest}` : `第${order}章`, 'chapter')
       nodes.push(cur)
       continue
     }
@@ -140,8 +156,13 @@ export function parseOutlineText(md: string): OutlineTree {
     return { title: '', text: src.trim(), volumes: [], plain: true }
   }
 
-  /* 扁平节点 → 卷/章 */
+  assignRoles(nodes)
+
+  /* 定完角色的节点 → 卷/章 */
   const tree: OutlineTree = { title: '', text: preface.join('\n').trim(), volumes: [], plain: false }
+  // 书名：第一个总纲之前的那几行里，像书名（《…》或短得没有句号）的那一行
+  if (!tree.title) tree.title = pickBookTitle(preface, nodes)
+
   let vol: OutlineVolume | null = null
   let chap: OutlineChapter | null = null
 
@@ -168,7 +189,7 @@ export function parseOutlineText(md: string): OutlineTree {
   }
 
   for (const n of nodes) {
-    if (n.level <= 1) {
+    if (n.role === 'volume') {
       vol = ensureVolume(n.title)
       vol.target = vol.target || n.target
       vol.text = joinText(vol.text, n.lines.join('\n').trim())
@@ -184,7 +205,7 @@ export function parseOutlineText(md: string): OutlineTree {
       if (rest.length) vol.text = joinText(vol.text, rowLines(rest))
       continue
     }
-    if (n.level === 2) {
+    if (n.role === 'chapter') {
       if (!vol) vol = ensureVolume('')
       chap = {
         title: n.title,
@@ -196,8 +217,13 @@ export function parseOutlineText(md: string): OutlineTree {
       addChapter(vol, chap)
       continue
     }
-    // 三级及以下：并进所属章（没有章就并进卷）
-    const block = [`${'#'.repeat(n.level)} ${n.title}`, ...n.lines, ...(n.rows.length ? [rowLines(n.rows)] : [])].join('\n')
+    // note（书名 / 全书设定）与 sub（更深一级的小细节）都不另起卷章：
+    // note 进全书大纲正文，sub 并进所属章 / 所属卷。
+    const block = [`${'#'.repeat(Math.min(6, n.level))} ${n.title}`, ...n.lines, ...(n.rows.length ? [rowLines(n.rows)] : [])].join('\n')
+    if (n.role === 'note') {
+      tree.text = tree.text ? `${tree.text}\n${block}` : block
+      continue
+    }
     if (chap) chap.text = chap.text ? `${chap.text}\n${block}` : block
     else if (vol) vol.text = vol.text ? `${vol.text}\n${block}` : block
     else tree.text = tree.text ? `${tree.text}\n${block}` : block
@@ -206,6 +232,64 @@ export function parseOutlineText(md: string): OutlineTree {
   // 只有「第X章」没有卷名时，给一个无名卷（= 正文根目录），UI 上写「不分卷」
   if (!tree.volumes.length) tree.volumes.push({ name: '', target: '', text: '', chapters: [] })
   return tree
+}
+
+/**
+ * 给每个节点定角色。
+ *
+ * 顺序：
+ *  1. 文本语义最优先 —— 写着「第X卷 / 部 / 篇」的就是卷，「第X章 / 回 / 节」的就是章，
+ *     跟它是几个 # 无关（`## 第一卷` 是卷，`# 第一章` 也是章）。
+ *  2. 剩下的 Markdown 标题按「层级投票」定：同一层级的标题们，语义多的赢；
+ *     都是普通文字的，按它在文档里的深浅排 —— 最浅的是总纲（有卷存在时）
+ *     或第一卷（没有卷标题时），深一级是章，再深是细节。
+ */
+function assignRoles(nodes: RawNode[]) {
+  const hasVolNode = nodes.some((n) => VOL_SMELL.test(n.title))
+  // 语义角色先钉死（vol/ch 行在建节点时已给，这里补 md 标题的）
+  for (const n of nodes) {
+    if (n.role === 'volume' || n.role === 'chapter') continue
+    if (VOL_SMELL.test(n.title)) n.role = 'volume'
+    else if (CH_SMELL.test(n.title)) n.role = 'chapter'
+  }
+  const levels = [...new Set(nodes.map((n) => n.level))].sort((a, b) => a - b)
+  const roleByLevel = new Map<number, Role>()
+  let prevRole: Role = hasVolNode ? 'note' : 'volume'
+  for (const lv of levels) {
+    const group = nodes.filter((n) => n.level === lv)
+    const volN = group.filter((n) => n.role === 'volume').length
+    const chN = group.filter((n) => n.role === 'chapter').length
+    let role: Role
+    if (volN > chN && volN > 0) role = 'volume'
+    else if (chN > 0) role = 'chapter'
+    // 全是普通文字的层级：按它在文档里的深浅排
+    else if (roleByLevel.size === 0) role = hasVolNode ? 'note' : 'volume'
+    else if (prevRole === 'note') role = 'volume'
+    else if (prevRole === 'volume') role = 'chapter'
+    else role = 'sub'
+    roleByLevel.set(lv, role)
+    prevRole = role
+  }
+  for (const n of nodes) {
+    if (n.role === 'volume' || n.role === 'chapter') continue
+    n.role = roleByLevel.get(n.level) || 'sub'
+  }
+}
+
+/** 书名：第一个标题之前那段里，最像书名的一行（《…》优先，其次短得没有句号的） */
+function pickBookTitle(preface: string[], nodes: RawNode[]): string {
+  for (const line of preface) {
+    const t = line.trim()
+    if (!t) continue
+    const m = /^《(.+?)》/.exec(t)
+    if (m) return m[1].trim()
+    if (t.length <= 30 && !/[。！？，,;；]/.test(t)) return t
+  }
+  // 书名不在开头：第一个总纲级标题也当书名用（「# 全书设定」之类就算了，
+  // 那是内容不是书名 —— 所以只取 note 角色里不带「设定/大纲/简介」字样的）
+  const note = nodes.find((n) => n.role === 'note')
+  if (note && !/设定|大纲|简介|概览|总纲|说明/.test(note.title)) return note.title
+  return ''
 }
 
 /** 表格首行是不是表头（章节 / 目标 / 字数 …） */
@@ -232,7 +316,7 @@ function rowToChapter(cells: string[]): OutlineChapter | null {
     }
     target = target ? `${target}；${c}` : c
   }
-  return { title: name.replace(/\*\*/g, ''), order: headingOrder(name), target, text: '', words }
+  return { title: cleanHeadingTitle(name), order: headingOrder(name), target, text: '', words }
 }
 
 /** 卷纲正文：卷自己的文字 + 章清单（作者拿记事本打开也看得懂） */
@@ -308,31 +392,23 @@ export function findChapter(chapters: Chapter[], c: OutlineChapter): Chapter | n
   return null
 }
 
-/** 全书大纲落在哪：优先作者已有的「剧情大纲 / 全书」文件，否则新建 大纲/剧情大纲.md */
+/**
+ * 全书大纲落在哪：**只看作者看得见的 大纲/ 根目录**（剧情大纲 / 全书…），
+ * 没有就新建 大纲/剧情大纲.md。
+ *
+ * 为什么不递归进 `.mdAI文件/`：那是新建作品时预置的模板目录。早先这里递归找，
+ * 结果导入的大纲落在根下、而目录树/上下文读到的还是 `.mdAI文件/` 里那份空模板 ——
+ * 作者看着「导进去了」，翻开却是空的。模板只配当兜底，不配当事实来源。
+ */
 export async function findBookOutlinePath(ref: DirRef): Promise<PathSeg> {
-  const hit = await searchDoc(ref, [DIRS.outline], ['剧情大纲', '全书'])
-  return hit || [DIRS.outline, '剧情大纲.md']
-}
-
-async function searchDoc(ref: DirRef, dir: PathSeg, keys: string[]): Promise<PathSeg | null> {
   let entries: { name: string; kind: 'file' | 'dir' }[] = []
   try {
-    entries = await fs().listDir(ref, dir)
+    entries = await fs().listDir(ref, [DIRS.outline])
   } catch {
-    return null
+    return [DIRS.outline, '剧情大纲.md']
   }
-  for (const e of entries) {
-    if (e.kind === 'file' && e.name.endsWith('.md') && keys.some((k) => e.name.includes(k))) {
-      return [...dir, e.name]
-    }
-  }
-  for (const e of entries) {
-    if (e.kind === 'dir') {
-      const sub = await searchDoc(ref, [...dir, e.name], keys)
-      if (sub) return sub
-    }
-  }
-  return null
+  const hit = entries.find((e) => e.kind === 'file' && e.name.endsWith('.md') && /剧情大纲|全书/.test(e.name))
+  return hit ? [DIRS.outline, hit.name] : [DIRS.outline, '剧情大纲.md']
 }
 
 async function tryRead(ref: DirRef, path: PathSeg): Promise<string> {
@@ -437,8 +513,9 @@ export async function applyOutline(
         res.written.push({ path: hit.id, kind: '章纲' })
       } else {
         const name = cleanChapterTitle(c.title)
-        const ch = await createChapter(ref, volumeId, name)
-        await saveChapter(ref, ch.id, '', { title: name, target, status: '待写' })
+        // 一次写完：createChapter 已带 patch，不必建完空章再 saveChapter 覆写一遍
+        // （手机上每章省一次落盘，几百章的大纲就是几百次）
+        const ch = await createChapter(ref, volumeId, name, { patch: { target: target || undefined, status: '待写' } })
         pool.push({ ...ch, meta: { ...ch.meta, target } })
         res.chaptersCreated++
         res.written.push({ path: ch.id, kind: '章纲（新建章节）' })
