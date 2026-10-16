@@ -1001,6 +1001,56 @@ try {
   check('改名后焦点回到列表（能接着用方向键）', (await page.evaluate("return document.activeElement?.className || ''")).includes('tree-body'))
   await shot(page, '20-tree-keyboard.png')
 
+  /* ---------- 7.09b 稿纸顶部标题就地改 ----------
+     作者原话：「标题还是不能修改，如第一章那个归乡就无法改动」。
+     目录树的 F2 改名一直是通的（上面刚验过）—— 作者改不动的是**编辑器稿纸顶部**
+     那个大标题，它原先只是个 h2 纯展示。现在点一下原地变输入框，回车走同一条
+     renameChapter 链路：文件名、frontmatter、目录树一起换。 */
+  section('7.09b 稿纸标题就地改：点标题 → 输入 → 回车（目录树外第二条改名路）')
+  const treeTitlesNow = () =>
+    page.evaluate("return Array.from(document.querySelectorAll('.tree-body .ch-title')).map((t) => t.textContent.trim())")
+  const headTitle = () => page.evaluate("return document.querySelector('.head-line .ch-title')?.textContent?.trim() || ''")
+
+  // 当前打开的就是刚改名的那章（Enter 打开 → F2 改名），直接点稿纸标题
+  await page.waitFor("document.querySelector('.head-line .ch-title')", { timeout: 8000, label: '稿纸标题' })
+  await sleep(300)
+  const titleBefore = await headTitle()
+  await page.click('.head-line .ch-title')
+  await sleep(350)
+  check('点稿纸标题，原地变成输入框（不用跑去目录树）', await page.evaluate("return !!document.querySelector('.head-line .ch-title-input')"))
+  check(
+    '输入框带着原名并自己拿到焦点（接着敲就是改）',
+    await page.evaluate("return document.activeElement?.classList?.contains('ch-title-input') && !!document.activeElement.value"),
+    await page.evaluate("return (document.activeElement?.className || '') + ' / ' + (document.activeElement?.value || '')")
+  )
+  await page.evaluate("const i = document.querySelector('.head-line .ch-title-input'); i.focus(); i.value = ''; i.dispatchEvent(new Event('input')); return true")
+  await page.typeText('标题就地改过的章')
+  await page.pressKey('Enter')
+  await sleep(1100)
+  const titleAfter = await headTitle()
+  check('回车后稿纸标题换成新名字', titleAfter === '标题就地改过的章', `${titleBefore} → ${titleAfter}`)
+  const treeAfterTitle = await treeTitlesNow()
+  check(
+    '目录树跟着换（与 F2 改名是同一条链路，不是只改了显示）',
+    treeAfterTitle.includes('标题就地改过的章') && !treeAfterTitle.includes('改过名的章'),
+    JSON.stringify(treeAfterTitle)
+  )
+  const diskRenamed = await page.evaluate(`
+    const files = await window.__fs.walk(${JSON.stringify(WORK + '/正文')})
+    return files.some((f) => f.endsWith('.md') && f.includes('标题就地改过的章'))
+  `)
+  check('磁盘上的文件名也换了（第NNN章 标题就地改过的章.md）', !!diskRenamed)
+  await shot(page, '20b-editor-title.png')
+
+  // 改回原名 —— 7.10b 往下还要按「改过名的章」点这一章，名字得还回去
+  await page.click('.head-line .ch-title')
+  await sleep(350)
+  await page.evaluate("const i = document.querySelector('.head-line .ch-title-input'); i.focus(); i.value = ''; i.dispatchEvent(new Event('input')); return true")
+  await page.typeText('改过名的章')
+  await page.pressKey('Enter')
+  await sleep(1100)
+  check('改回原名（下面的用例还按旧名点它）', (await treeTitlesNow()).includes('改过名的章'), JSON.stringify(await treeTitlesNow()))
+
   /* ---------- 7.10b 快照回滚：屏幕和磁盘必须一起变 ---------- */
   section('7.10b 快照回滚：编辑器与磁盘必须同时改（不然下一个按键就把回滚冲掉）')
   // 曾经的写法是「读快照 → 只写 state.content」。编辑器**只在 currentId 变化时**
@@ -1643,8 +1693,12 @@ try {
   section('7.13 大纲：卷数/章数自己定 · 导入后自动填 · 中文标签与想法')
 
   const openOutlineDlg = async () => {
-    await page.clickByText('.bar button', '大纲')
-    await page.waitFor("document.querySelector('.dialog .shape')", { timeout: 8000, label: '大纲对话框（规模区）' })
+    /* 功能搬家后：规模那三个输入框在「导入大纲」窗口里（默认落「导入」页，再切「生成新骨架」）。
+       「大纲」入口现在是本书大纲查看窗，不再有 .shape。 */
+    await page.clickByText('.right button', '导入大纲')
+    await page.waitFor("document.querySelector('.dialog .tabs')", { timeout: 8000, label: '导入大纲窗口（页签行）' })
+    await page.clickByText('.dialog .tabs button', '生成新骨架')
+    await page.waitFor("document.querySelector('.dialog .shape')", { timeout: 8000, label: '生成骨架页（规模区）' })
   }
   const closeDlg = async () => {
     await page.click('.dialog > .head .btn-icon')
@@ -1663,6 +1717,31 @@ try {
       el.dispatchEvent(new Event('change', { bubbles: true }))
       return true
     `)
+
+  /* 功能搬家后的两个入口各司其职：「大纲」= 本书大纲查看窗（只读，空态指路去导入），
+     「导入大纲」= 导入/生成骨架/现有大纲/AI 推荐 四页签汇总窗。
+     先验前者打开的是查看窗，而不是原来那个功能框。 */
+  await page.clickByText('.bar button', '大纲')
+  await page.waitFor("document.querySelector('.dialog')", { timeout: 8000, label: '大纲查看窗' })
+  await sleep(400)
+  const vtext = await odlgText()
+  const vstate = await page.evaluate(`
+    const empt = document.querySelector('.dialog .empty')
+    const items = document.querySelectorAll('.dialog .split .li').length
+    return { empt: !!(empt && /还没有可看的大纲/.test(empt.innerText)), items }
+  `)
+  check(
+    '大纲入口 = 查看窗：要么列着本书的大纲 / 卷纲清单，要么明说还没有并指路去导入',
+    vstate.empt || vstate.items > 0,
+    `empty=${vstate.empt} items=${vstate.items}：${vtext.slice(0, 120)}`
+  )
+  check(
+    '大纲入口不再是老功能框（打开时没有规模输入区）',
+    !(await page.evaluate("return !!document.querySelector('.dialog .shape')")),
+    vtext.slice(0, 120)
+  )
+  await shot(page, '33a-outline-viewer.png')
+  await closeDlg()
 
   await openOutlineDlg()
   check(

@@ -6,7 +6,7 @@ import { Markdown } from 'tiptap-markdown'
 import { settings } from '@/core/settings'
 import { mobileEnv } from '@/platform'
 import { countWords } from '@/core/util'
-import { allChapters, currentChapter, currentVolume, markDirty, newChapter, saveNow, selectChapter, state } from '@/stores/workspace'
+import { allChapters, currentChapter, currentVolume, markDirty, newChapter, renameChapter, saveNow, selectChapter, state } from '@/stores/workspace'
 import { jumpRequest, applyApi, editorApi, editorState, selectedText, caretPos, pushNav, touchNavPos, withNavApplied } from '@/stores/editor'
 import { codexState, ensureCodex } from '@/stores/codex'
 import type { SettingEntry } from '@/core/types'
@@ -32,6 +32,50 @@ async function createFirstChapter() {
     creatingFirst.value = false
   }
 }
+
+/* ------------------------------------------------ 稿纸标题就地改名 */
+/**
+ * 稿纸顶部那行大标题以前是纯展示（h2）——作者在正文上方看到「第一章 归乡」，
+ * 点哪儿都改不动，报告里说的「标题无法修改」正是它（目录树里的双击改名其实一直是通的）。
+ * 现在点一下就地变输入框：回车 / 失焦提交（走 renameChapter，文件名与 frontmatter 一起换），Esc 放弃。
+ */
+const editingTitle = ref(false)
+const titleDraft = ref('')
+const titleBox = ref<HTMLInputElement | null>(null)
+
+function startEditTitle() {
+  const ch = currentChapter.value
+  if (!ch || editingTitle.value) return
+  titleDraft.value = ch.title
+  editingTitle.value = true
+  nextTick(() => {
+    titleBox.value?.focus()
+    titleBox.value?.select()
+  })
+}
+
+async function commitTitle() {
+  if (!editingTitle.value) return
+  editingTitle.value = false
+  const ch = currentChapter.value
+  const v = titleDraft.value.trim()
+  if (!ch || !v || v === ch.title) return
+  // renameChapter 内部会 saveNow → 写新文件名 → 删旧文件 → selectChapter(新 id)，
+  // 换 id 会让这里刷新成新章 —— 标题输入态已在上面先收掉，不会被半路卸载。
+  await renameChapter(ch.id, v)
+}
+
+function cancelTitle() {
+  editingTitle.value = false
+}
+
+// 改名成功后 currentId 会换（文件名变了）——若此刻还挂着编辑态，收掉它
+watch(
+  () => state.currentId,
+  () => {
+    editingTitle.value = false
+  }
+)
 
 let editor: Editor | null = null
 
@@ -454,7 +498,31 @@ defineExpose({ doFind })
     <div class="editor-scroll" @scroll="mention.open = false">
       <div class="paper-col" :style="paperStyle">
         <div v-if="state.currentId" class="head-line">
-          <h2 class="ch-title">{{ currentChapter?.title || '（未选择章节）' }}</h2>
+          <div class="title-row">
+            <h2
+              v-if="!editingTitle"
+              class="ch-title"
+              title="点击修改标题"
+              @click="startEditTitle"
+            >{{ currentChapter?.title || '（未选择章节）' }}</h2>
+            <input
+              v-else
+              ref="titleBox"
+              v-model="titleDraft"
+              class="ch-title-input"
+              maxlength="60"
+              spellcheck="false"
+              @keydown.enter.prevent="commitTitle"
+              @keydown.esc.stop.prevent="cancelTitle"
+              @blur="commitTitle"
+            />
+            <button
+              v-if="!editingTitle"
+              class="btn-icon title-edit"
+              title="修改标题"
+              @click="startEditTitle"
+            >✎</button>
+          </div>
           <div class="small dim row">
             <span v-if="currentVolume">{{ currentVolume.name }}</span>
             <span>·</span>
@@ -571,12 +639,53 @@ defineExpose({ doFind })
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line-soft);
 }
+/* 标题行：大标题 + 悬浮才出现的 ✎（不抢视觉，但一直给着入口） */
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .ch-title {
   margin: 0;
   font-size: 20px;
   font-weight: 650;
   letter-spacing: 0.01em;
   line-height: 1.4;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background-color 0.14s ease;
+}
+.ch-title:hover {
+  background: var(--bg-hover);
+  /* 悬停给一圈淡底：作者一眼看出「这行能点」 */
+  box-shadow: 0 0 0 4px var(--bg-hover);
+}
+.title-edit {
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+.title-row:hover .title-edit {
+  opacity: 1;
+}
+/* 就地改名输入框：跟原标题同字号同位置，改完回车就回到展示态 */
+.ch-title-input {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg-field);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 1px 8px;
+  min-width: 0;
+  width: min(460px, 100%);
+  box-shadow: var(--ring, 0 0 0 3px var(--accent-soft));
+}
+.ch-title-input:focus {
+  outline: none;
 }
 .blank-start {
   border: 1px dashed var(--line);

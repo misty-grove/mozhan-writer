@@ -39,6 +39,12 @@ function openOutlineImport() {
   showImport.value = false
   showImportOutline.value = true
 }
+/** 从「导入大纲」里点「查看本书大纲」：对调过来，同样别叠两层 */
+function openOutlineView() {
+  showImportOutline.value = false
+  showImport.value = false
+  showOutline.value = true
+}
 const showSandbox = ref(false)
 const bodyEl = ref<HTMLElement | null>(null)
 /**
@@ -358,7 +364,7 @@ watch(
     <ExportDialog v-if="showExport" @close="showExport = false" />
     <OutlineDialog v-if="showOutline" @close="showOutline = false" @import-outline="openOutlineImport" />
     <ImportDialog v-if="showImport" @close="showImport = false" @import-outline="openOutlineImport" />
-    <ImportOutlineDialog v-if="showImportOutline" @close="showImportOutline = false" />
+    <ImportOutlineDialog v-if="showImportOutline" @close="showImportOutline = false" @view-outline="openOutlineView" />
     <SnapshotDialog v-if="showSnapshots" @close="showSnapshots = false" />
     <SandboxDialog v-if="showSandbox" @close="showSandbox = false" />
     <ShortcutHelp v-if="editorState.helpOpen" @close="editorState.helpOpen = false" />

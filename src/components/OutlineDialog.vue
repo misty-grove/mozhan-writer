@@ -1,550 +1,317 @@
 <script setup lang="ts">
 /**
- * 大纲与章纲（P1-19）
+ * 「大纲」—— 本书已导入内容的查看窗（功能已汇总进「导入大纲」，这里只管看）。
  *
- * 两件事分开：
- *  ① 规模 —— **卷数与章数由作者自己定**（导入大纲后按大纲自动填好，仍可改）。
- *     以前是「按目标字数算一个给你看」，那个 4 卷 67 章既没人认领、又总跟作者想的不一样。
- *  ② 内容 —— 卷目标留白由作者填/导入/AI 补；章纲走 表格留白 / 导入 / AI 三条路。
+ * 作者的原话：「导入大纲后可以在大纲页面看本作大纲卷纲」。所以这个窗口做的事只有三件：
+ *  ① 列出全书大纲（大纲/剧情大纲.md）
+ *  ② 列出每卷的分卷大纲（正文/第X卷/卷纲.md）
+ *  ③ 点哪份读哪份（右侧就地阅读，只读）
  *
- * AI 推荐（第三个页签）支持三种输入：题材标签、作者自己的想法、世界观材料。
+ * 什么都没有时不再给「生成骨架 / AI 推荐」——那些功能已经搬进「导入大纲」，
+ * 这里只留一句实话和一个跳过去的按钮，免得作者在两个入口之间来回猜。
+ *
+ * 桌面上它是可拖动、可缩放的独立窗口（WinBox）；手机上保持底部抽屉。
  */
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import fs from '@/platform'
-import {
-  buildSkeleton,
-  countChapters,
-  outlinePrompt,
-  parseOutlineMarkdown,
-  recommendPrompt,
-  reshapeSkeleton,
-  toOutlineMarkdown,
-  type Skeleton
-} from '@/core/outline'
-import { TAG_GROUPS, joinTags, lengthTagOf, parseTags, wordsOfTag, type TagGroup } from '@/core/tags'
-import { rememberTags } from '@/core/worldbuild'
-import { createVolume } from '@/core/workspace'
-import { newChapter, refresh, state } from '@/stores/workspace'
-import { aiEnabled } from '@/core/settings'
-import { generate } from '@/stores/ai'
-import { setDockTab } from '@/stores/editor'
+import { computed, onMounted, ref, watch } from 'vue'
+import { readAsset, readVolumeOutline } from '@/core/workspace'
+import { findBookOutlinePath } from '@/core/importOutline'
+import { hasRealOutline } from '@/core/worldbuild'
+import { mdToSimpleHtml } from '@/core/outlineView'
+import { refresh, state } from '@/stores/workspace'
+import WinBox from './WinBox.vue'
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'import-outline'): void }>()
 
-const tab = ref<'new' | 'existing' | 'recommend'>('new')
-const busy = ref(false)
-const msg = ref('')
-const existing = ref('')
-
-/* ------------------------------------------------------------------ 规模
- * 卷数 / 章数 / 每章字数：作者自己定。导入大纲后由 syncShape() 按大纲填好。
- * 目标字数不再是输入框 —— 它 = 章数 × 每章字数，跟着算出来就够了。
- */
-const shape = reactive({ volumes: 4, chapters: 60, chapterWords: 3000 })
-const targetWords = computed(() => Math.max(0, (Number(shape.chapters) || 0) * (Number(shape.chapterWords) || 0)))
-const wanWords = computed(() => (Number.isFinite(targetWords.value) ? (targetWords.value / 10000).toFixed(1) : '0'))
-
-function clampShape() {
-  shape.chapters = Math.min(5000, Math.max(1, Math.round(Number(shape.chapters) || 1)))
-  shape.chapterWords = Math.min(20000, Math.max(500, Math.round(Number(shape.chapterWords) || 3000)))
-  // 卷数不可能比章数多：当场把它按回去，别等到预览里出现「第2章-第1章」才让人纳闷
-  shape.volumes = Math.min(60, Math.max(1, Math.round(Number(shape.volumes) || 1)), shape.chapters)
+interface OutlineItem {
+  key: string
+  icon: string
+  label: string
+  sub: string
+  text: string
 }
 
-function syncShape(s: Skeleton) {
-  shape.volumes = Math.max(1, s.volumes.length)
-  shape.chapters = Math.max(1, countChapters(s))
-  if (s.chapterWords >= 500) shape.chapterWords = s.chapterWords
-}
+const items = ref<OutlineItem[]>([])
+const sel = ref('')
+const loading = ref(false)
 
-/** 篇幅标签的选中态是**算出来的**（总字数落在哪一档），所以不存在两份状态对不上的问题 */
-const lengthTag = computed(() => lengthTagOf(targetWords.value))
+const current = computed(() => items.value.find((i) => i.key === sel.value) || items.value[0] || null)
+const html = computed(() => (current.value ? mdToSimpleHtml(current.value.text) : ''))
 
-function pickLength(tag: string) {
-  const words = wordsOfTag(tag)
-  if (!words) return
-  shape.chapterWords = Math.min(20000, Math.max(500, Math.round(Number(shape.chapterWords) || 3000)))
-  shape.chapters = Math.max(1, Math.round(words / shape.chapterWords))
-}
-
-const skeleton = computed<Skeleton>(() =>
-  buildSkeleton({
-    title: state.info.title || '未命名',
-    chapters: shape.chapters,
-    chapterWords: shape.chapterWords,
-    volumes: shape.volumes
-  })
+/** 全书大纲在不在（从扫描产物里找「作者可见的那份」，与目录树同一判据） */
+const bookAsset = computed(() =>
+  state.assets.find((a) => a.group === '大纲' && !a.id.includes('.mdAI文件') && /剧情大纲|全书/.test(a.name)) || null
 )
 
-/* 卷目标：留白由作者自己填。骨架随规模输入实时变化，这里按卷序号对齐保存已输入的值 */
-const volTargets = ref<string[]>([])
-watch(
-  () => skeleton.value.volumes.length,
-  (n) => {
-    while (volTargets.value.length < n) volTargets.value.push('')
-    volTargets.value.length = n
-  },
-  { immediate: true }
-)
-
-/* ------------------------------------------------------------------ 用现有大纲
- * 作者粘/导进来的大纲是**事实来源**：一识别出来就把规模数字填成它的样子，
- * 之后作者想改成 5 卷 90 章，改的就是这三个数字（reshaped 负责重排）。
- */
-const parsed = computed<Skeleton | null>(() => {
-  if (!existing.value.trim()) return null
-  const s = parseOutlineMarkdown(existing.value)
-  return s.volumes.length ? s : null
-})
-
-const reshaped = computed<Skeleton | null>(() => (parsed.value ? reshapeSkeleton(parsed.value, shape.volumes, shape.chapters) : null))
-
-// 大纲原文一变（粘贴 / 手改 / 导入）= 重新声明结构，规模跟着它走
-watch(parsed, (p) => {
-  if (p && tab.value === 'existing') syncShape(p)
-})
-watch(tab, (t) => {
-  if (t === 'existing' && parsed.value) syncShape(parsed.value)
-})
-
-/** 预览用的骨架：用现有大纲时看 reshaped，其余看按数字铺的骨架 */
-const active = computed<Skeleton>(() => (tab.value === 'existing' && reshaped.value ? reshaped.value : skeleton.value))
-
-/** 落盘 / 建章 / 喂 AI 用的是「骨架 + 作者填的卷目标」 */
-const finalSkeleton = computed<Skeleton>(() => {
-  if (tab.value === 'existing' && reshaped.value) return reshaped.value
-  const s = skeleton.value
-  return { ...s, volumes: s.volumes.map((v, i) => ({ ...v, target: (volTargets.value[i] || '').trim() })) }
-})
-
-async function writeFile() {
-  if (!state.ref) return
-  clampShape()
-  busy.value = true
-  try {
-    // 全书大纲只有一个家：大纲/剧情大纲.md —— 跟「导入大纲」的落点一致，
-    // 免得作者在目录里看到两份大纲，不知道哪份算数。
-    await fs().writeFile(state.ref, ['大纲', '剧情大纲.md'], toOutlineMarkdown(finalSkeleton.value, state.info.brief))
-    msg.value = '已写入 大纲/剧情大纲.md'
-  } catch (e: any) {
-    msg.value = `写入失败：${e?.message || e}`
-  } finally {
-    busy.value = false
+async function load() {
+  if (!state.ref) {
+    items.value = []
+    return
   }
-}
-
-async function buildChapters() {
-  if (!state.ref) return
-  clampShape()
-  busy.value = true
-  msg.value = '正在建章节…'
+  loading.value = true
   try {
-    const s = finalSkeleton.value
-    let n = 0
-    for (const v of s.volumes) {
-      const vol = await createVolume(state.ref, v.name)
-      for (const c of v.chapters) {
-        await newChapter(vol.id, c.title)
-        n++
+    const out: OutlineItem[] = []
+
+    // 全书大纲：只认「有真内容」的（稿纸模板不算，免得点开是个空壳）
+    try {
+      const path = await findBookOutlinePath(state.ref)
+      const text = await readAsset(state.ref, path.join('/'))
+      if (hasRealOutline(text)) {
+        const h = /^#\s+(.+)$/m.exec(text)?.[1]?.trim()
+        out.push({ key: 'book', icon: '📖', label: h || '全书大纲', sub: '大纲/剧情大纲.md', text })
+      }
+    } catch {
+      /* 没有全书大纲 */
+    }
+
+    // 每卷的分卷大纲
+    for (const v of state.volumes) {
+      if (!v.hasOutline) continue
+      try {
+        const { body, meta } = await readVolumeOutline(state.ref, v.id)
+        const full = `# ${v.name}\n\n${body}`
+        if (!hasRealOutline(full)) continue
+        out.push({
+          key: v.id,
+          icon: '📑',
+          label: v.name,
+          sub: meta.target ? `卷目标：${meta.target}` : '分卷大纲',
+          text: full
+        })
+      } catch {
+        /* 这卷读不到就跳过 */
       }
     }
-    await refresh(false)
-    msg.value = `已建 ${s.volumes.length} 卷 ${n} 章`
-  } catch (e: any) {
-    msg.value = `建章节失败：${e?.message || e}`
+
+    items.value = out
+    // 选中项还活着就留着，否则落到第一份（通常是全书大纲）
+    if (!out.some((i) => i.key === sel.value)) sel.value = out[0]?.key || ''
   } finally {
-    busy.value = false
+    loading.value = false
   }
 }
 
-async function askAi() {
-  if (!aiEnabled()) return
-  clampShape()
-  busy.value = true
-  msg.value = 'AI 正在补章纲…'
-  try {
-    const out = await generate({
-      mode: 'outline',
-      instruction: outlinePrompt(state.info, finalSkeleton.value, ''),
-      n: 1
-    })
-    setDockTab('candidate')
-    msg.value = out.length ? `已生成 ${out.length} 个候选，在「候选」里查看并采纳` : '没有生成候选'
-  } catch (e: any) {
-    msg.value = `AI 生成失败：${e?.message || e}`
-  } finally {
-    busy.value = false
-  }
+async function reload() {
+  await refresh(false)
+  await load()
 }
 
-/* ------------------------------------------------------------------ AI 推荐
- * 三份输入：点选的标签（含频道/题材/风格/篇幅）、作者自己打的标签、作者写的想法。
- * 三份都会进提示词 —— 界面上直接把「AI 实际会看到的那串」显示出来，免得作者
- * 以为自己写了、其实没进去。
- */
-const recChips = ref<string[]>([])
-const recCustom = ref('')
-const recIdea = ref('')
-const recMaterial = ref('')
-const settingNames = ref<string[]>([])
-
-const customTags = computed(() => parseTags(recCustom.value))
-const allTags = computed(() => joinTags([...recChips.value, ...customTags.value, lengthTag.value]))
-
-/* 标签本身不落盘，但「生成设定」要用它 —— 作者点一次标签，之后开设定面板
-   不该再点一遍。这里在标签变化时把最终那串存下来（界面显示的与存的是同一串，
-   避免「看到的」和「AI 收到的」不一致）。 */
-watch(allTags, (v) => rememberTags(v))
-
-function chipOn(t: string, g: TagGroup): boolean {
-  return g.key === 'length' ? t === lengthTag.value : recChips.value.includes(t)
-}
-
-function onChip(t: string, g: TagGroup) {
-  if (g.key === 'length') {
-    pickLength(t)
-    return
-  }
-  const on = recChips.value.includes(t)
-  let next = recChips.value.filter((x) => x !== t)
-  if (!on) {
-    // 单选组（频道）：同组里只留一个
-    if (g.single) next = next.filter((x) => !g.tags.includes(x))
-    next = [...next, t]
-  }
-  recChips.value = next
-}
-
-/** 从作品的 设定/ 目录把 md/txt 带进来 —— 写过的世界观不必再抄一遍 */
-async function bringSettings() {
-  if (!state.ref) return
-  const parts: string[] = []
-  for (const name of settingNames.value) {
-    try {
-      parts.push(`【${name.replace(/\.(md|txt)$/i, '')}】\n` + (await fs().readFile(state.ref, ['设定', name])))
-    } catch {
-      /* 读不到的跳过 */
-    }
-  }
-  recMaterial.value = parts.join('\n\n')
-  msg.value = parts.length ? `已带入 设定/ 里的 ${parts.length} 个文件（超过 12000 字会截断）` : '设定/ 里没有可带入的 md/txt 文件'
-}
-
-async function importMaterial(e: Event) {
-  const files = Array.from((e.target as HTMLInputElement).files || [])
-  ;(e.target as HTMLInputElement).value = ''
-  if (!files.length) return
-  const parts: string[] = recMaterial.value ? [recMaterial.value] : []
-  for (const f of files) parts.push(`【${f.name.replace(/\.[^.]+$/, '')}】\n` + (await f.text()))
-  recMaterial.value = parts.join('\n\n')
-  msg.value = `已带入 ${files.length} 个文件`
-}
-
-async function askRecommend() {
-  if (!aiEnabled()) return
-  clampShape()
-  /* 判据看的是「作者真的给了什么」——别拿 allTags 判：篇幅标签是由规模数字算出来的，
-     永远非空，拿它当条件等于这道门根本没关。 */
-  if (!recChips.value.length && !customTags.value.length && !recIdea.value.trim() && !recMaterial.value.trim() && !state.info.brief.trim()) {
-    msg.value = '至少点几个标签、写一句想法、或带一点设定材料 —— 什么都不给的话，AI 只能凭空编一个故事。'
-    return
-  }
-  busy.value = true
-  msg.value = 'AI 正在推荐大纲…'
-  try {
-    const out = await generate({
-      mode: 'outline',
-      instruction: recommendPrompt({
-        info: state.info,
-        s: skeleton.value,
-        tags: allTags.value,
-        idea: recIdea.value,
-        material: recMaterial.value
-      }),
-      n: 1
-    })
-    setDockTab('candidate')
-    rememberTags(allTags.value)
-    msg.value = out.length ? '推荐稿已进「候选」—— 看过、改过，再点「写入大纲文件」落盘' : '没有生成候选'
-  } catch (e: any) {
-    msg.value = `AI 生成失败：${e?.message || e}`
-  } finally {
-    busy.value = false
-  }
-}
-
-onMounted(async () => {
-  try {
-    // 老作品的大纲可能还叫 大纲.md：先读新家，没有再读旧的（只读一次，不迁移文件）
-    try {
-      existing.value = await fs().readFile(state.ref!, ['大纲', '剧情大纲.md'])
-    } catch {
-      existing.value = await fs().readFile(state.ref!, ['大纲', '大纲.md'])
-    }
-    if (existing.value.trim() && parsed.value) {
-      tab.value = 'existing'
-      syncShape(parsed.value)
-    }
-  } catch {
-    /* 还没有大纲文件 */
-  }
-  try {
-    const es = await fs().listDir(state.ref!, ['设定'])
-    settingNames.value = es.filter((e) => e.kind === 'file' && /\.(md|txt)$/i.test(e.name)).map((e) => e.name)
-  } catch {
-    /* 还没有设定目录 */
-  }
-})
+// 两条触发线：换作品、大纲文件变化（导入 / 大纲面板写入后 assets 会整个换）
+watch([() => state.ref?.id, bookAsset, () => state.volumes], () => void load(), { immediate: true })
+onMounted(() => void load())
 </script>
 
 <template>
-  <div class="mask" @click.self="emit('close')">
-    <div class="dialog">
-      <div class="spread head">
-        <b>大纲与章纲</b>
-        <button class="btn-icon" @click="emit('close')">×</button>
-      </div>
+  <WinBox title="大纲" :width="860" :height="560" store-key="outline-view" @close="emit('close')">
+    <template #extra>
+      <button class="text small" title="重新读一遍磁盘上的大纲" @click="reload">刷新</button>
+      <button class="text small" @click="emit('import-outline')">导入大纲</button>
+    </template>
 
-      <div class="body col">
-        <div class="row small">
-          <button class="text small" :class="{ on: tab === 'new' }" @click="tab = 'new'">生成新骨架</button>
-          <button class="text small" :class="{ on: tab === 'existing' }" @click="tab = 'existing'">用现有大纲</button>
-          <button v-if="aiEnabled()" class="text small" :class="{ on: tab === 'recommend' }" @click="tab = 'recommend'">AI 推荐</button>
-        </div>
-
-        <!-- 规模：卷数与章数是作者定的（导入大纲后自动按大纲填好，随时可改） -->
-        <div class="shape">
-          <div class="spread small">
-            <span class="dim">规模（自己定）</span>
-            <span class="dim">约 {{ wanWords }} 万字</span>
-          </div>
-          <div class="row">
-            <label class="small">卷数<input v-model.number="shape.volumes" type="number" min="1" max="60" @change="clampShape" /></label>
-            <label class="small">章数<input v-model.number="shape.chapters" type="number" min="1" max="5000" @change="clampShape" /></label>
-            <label class="small">每章字数<input v-model.number="shape.chapterWords" type="number" step="500" min="500" max="20000" @change="clampShape" /></label>
-            <span v-if="tab === 'existing' && parsed" class="small dim grow">按大纲自动填的，可改</span>
-          </div>
-        </div>
-
-        <textarea
-          v-if="tab === 'existing'"
-          v-model="existing"
-          rows="7"
-          class="md"
-          spellcheck="false"
-          placeholder="粘贴或直接编辑 大纲/剧情大纲.md 的内容"
-        ></textarea>
-
-        <template v-else-if="tab === 'recommend'">
-          <p class="small dim rec-hint">
-            不按现有骨架补目标，而是让 AI 从零推荐一条故事线。标签、想法、设定材料可以任意组合 ——
-            给得越具体，推荐越贴你的意思。
-          </p>
-          <div v-for="g in TAG_GROUPS" :key="g.key" class="col small tag-group">
-            <span class="dim">{{ g.label }}<span class="g-hint">{{ g.single ? '（单选）' : '（可多选）' }}</span></span>
-            <div class="chips tags">
-              <button
-                v-for="t in g.tags"
-                :key="t"
-                class="chip tchip"
-                :class="{ on: chipOn(t, g) }"
-                type="button"
-                @click="onChip(t, g)"
-              >
-                {{ t }}
-              </button>
-            </div>
-          </div>
-          <div class="col small">
-            <span class="dim">自定义标签 —— 用 <b>、</b> 或空格分隔，自己造词也行；里面含常用题材词（如「男频玄幻」）会自动认出来</span>
-            <input v-model="recCustom" placeholder="例如：都市异能、克苏鲁、双男主、赛博修行……" />
-          </div>
-          <div class="col small">
-            <span class="dim">想法 —— 想让 AI 知道的事（可留空）。它比标签更具体，AI 会优先照它写</span>
-            <textarea
-              v-model="recIdea"
-              rows="3"
-              class="idea"
-              spellcheck="false"
-              placeholder="例：主角是个失业的修表匠，金手指是能听见钟表的心跳；想慢热一点，别一上来就无敌。"
-            ></textarea>
-          </div>
-          <div class="col small">
-            <div class="spread">
-              <span class="dim">世界观 / 人物设定材料（可留空）</span>
-              <span class="row">
-                <button v-if="settingNames.length" class="text small" :disabled="busy" @click="bringSettings">从 设定/ 带入（{{ settingNames.length }}）</button>
-                <label class="text small" style="cursor: pointer">
-                  导入 md / txt
-                  <input type="file" accept=".md,.markdown,.txt" multiple style="display: none" @change="importMaterial" />
-                </label>
-                <button v-if="recMaterial" class="text small" @click="recMaterial = ''">清空</button>
-              </span>
-            </div>
-            <textarea v-model="recMaterial" rows="5" class="md" spellcheck="false" placeholder="粘贴世界观、人物设定、力量体系……留空则只按上面的标签与想法推荐"></textarea>
-            <span v-if="recMaterial" class="dim">{{ recMaterial.length.toLocaleString() }} 字（超过 12000 字会截断）</span>
-          </div>
-          <p v-if="allTags" class="small dim seen-tags">AI 会看到这些标签：<b>{{ allTags }}</b></p>
-          <p class="small dim">推荐稿进「候选区」，点「写入大纲文件」才落盘 —— 不满意就再点一次推荐，换个思路。</p>
-        </template>
-
-        <!-- 只到卷这一层：第×卷（第A章-第B章）+ 卷目标留白。
-             章这一层不在这里铺开 —— 逐章罗列几十个「第几章」没有信息量，
-             章纲走 表格留白（写入大纲文件）/ 导入 / AI 补 三条路。 -->
-        <div class="prev" v-if="tab !== 'recommend'">
-          <div v-for="(v, i) in active.volumes" :key="v.name + i" class="vol">
-            <div class="spread">
-              <b class="small">{{ v.name }}<span v-if="v.start && v.end" class="dim">（第{{ v.start }}章-第{{ v.end }}章）</span></b>
-              <span v-if="tab === 'existing' && v.target" class="small dim">{{ v.target }}</span>
-            </div>
-            <input
-              v-if="tab === 'new'"
-              v-model="volTargets[i]"
-              placeholder="卷目标（可留空）：这一卷要讲什么"
-            />
-          </div>
-          <p v-if="!active.volumes.length" class="small dim">还没有卷 —— 先在上面定好卷数与章数。</p>
-        </div>
-
-        <p class="small dim" v-if="tab !== 'recommend'">
-          章纲只铺「第x章」坑位、目标留白 —— 自己写、从 Word / md 导入、或让 AI 补，三种都行；写进 大纲/剧情大纲.md 后随时手改。
-        </p>
-        <div v-if="msg" class="small dim">{{ msg }}</div>
-
-        <div class="row wrap">
-          <button class="text small" :disabled="busy" @click="emit('import-outline')">从 Word / md 文件导入…</button>
-        </div>
-
-        <div class="row">
-          <button class="primary" :class="{ ghost: tab === 'recommend' }" :disabled="busy" @click="writeFile">写入大纲文件</button>
-          <button :disabled="busy" @click="buildChapters">同时建章节文件</button>
-          <button v-if="aiEnabled() && tab !== 'recommend'" :disabled="busy" @click="askAi">让 AI 补章纲</button>
-          <button v-if="aiEnabled() && tab === 'recommend'" class="primary" :disabled="busy" @click="askRecommend">
-            {{ busy ? '推荐中…' : '让 AI 推荐大纲' }}
-          </button>
-          <button @click="emit('close')">关闭</button>
-        </div>
+    <!-- 空态：一句话说清现状，一个按钮去该去的地方 -->
+    <div v-if="!items.length && !loading" class="empty col">
+      <p class="dim">这部书还没有可看的大纲。</p>
+      <p class="small dim">
+        在「导入大纲」里把 Word / md 大纲导进来（或粘进去），这里就会列出
+        <b>全书大纲</b> 与 <b>各卷的分卷大纲</b>，点哪份读哪份。
+      </p>
+      <div class="row">
+        <button class="primary" @click="emit('import-outline')">去导入大纲</button>
       </div>
     </div>
-  </div>
+    <div v-else-if="loading" class="dim small">读取中…</div>
+
+    <template v-else>
+      <!-- 左：清单；右：阅读区。窗口拉窄时清单折到上面，不会把阅读区挤没 -->
+      <div class="split">
+        <nav class="list">
+          <button
+            v-for="it in items"
+            :key="it.key"
+            class="li"
+            :class="{ on: current?.key === it.key }"
+            @click="sel = it.key"
+          >
+            <span class="ic">{{ it.icon }}</span>
+            <span class="tx">
+              <b>{{ it.label }}</b>
+              <span class="small dim sub">{{ it.sub }}</span>
+            </span>
+          </button>
+        </nav>
+        <article class="reader">
+          <div class="rd-head spread">
+            <b class="small">{{ current?.label || '' }}</b>
+            <span class="small dim">{{ current?.sub }}</span>
+          </div>
+          <div class="md" v-html="html"></div>
+          <div class="small dim rd-foot">只读 —— 要改内容，去「导入大纲」里改完写入，或直接编辑 md 文件</div>
+        </article>
+      </div>
+    </template>
+  </WinBox>
 </template>
 
 <style scoped>
-.dialog {
-  width: 560px;
-  max-height: 86vh;
+/* WinBox 的 body 是纵向 flex 容器，这里让主体部分把它撑满 */
+.split {
+  display: flex;
+  gap: 10px;
+  flex: 1;
+  min-height: 320px;
 }
-.wrap {
-  flex-wrap: wrap;
-}
-/* 规模三件套：贴在一起，一眼能看出「这几个数是跟着我走的」 */
-.shape {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: var(--bg-panel);
+.list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+  width: 216px;
+  flex: 0 0 216px;
+  overflow: auto;
+  max-height: 60vh;
 }
-.shape label.small {
+.li {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-soft);
+  align-items: flex-start;
+  gap: 7px;
+  text-align: left;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.li:hover {
+  background: var(--bg-hover);
+}
+.li.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.li .tx {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.li b {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.shape input {
-  width: 84px;
+.li .sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-label.small {
+.ic {
+  flex: 0 0 auto;
+}
+.reader {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  color: var(--text-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+.rd-head {
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--line-soft);
 }
 .md {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 12px;
-  min-height: 120px;
-  resize: vertical;
-}
-/* 「想法」是散文，别用等宽字体 */
-.idea {
-  font-size: 13px;
-  min-height: 66px;
-  resize: vertical;
-}
-.prev {
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 8px 10px;
-  max-height: 220px;
+  flex: 1;
   overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  padding: 10px 13px;
+  font-size: 13.5px;
+  line-height: 1.75;
+}
+.md :deep(h1) {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+.md :deep(h2) {
+  font-size: 15px;
+  margin: 14px 0 6px;
+}
+.md :deep(h3) {
+  font-size: 14px;
+  margin: 12px 0 4px;
+}
+.md :deep(h4) {
+  font-size: 13px;
+  margin: 10px 0 4px;
+  color: var(--text-soft);
+}
+.md :deep(p) {
+  margin: 6px 0;
+}
+.md :deep(table) {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12.5px;
+  width: 100%;
+}
+.md :deep(th),
+.md :deep(td) {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.md :deep(th) {
   background: var(--bg-panel);
+  white-space: nowrap;
 }
-.prev p {
-  margin: 0;
+.md :deep(ul) {
+  margin: 6px 0;
+  padding-left: 20px;
 }
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 4px;
+.md :deep(li) {
+  margin: 2px 0;
 }
-.tag-group {
-  gap: 0;
+.md :deep(blockquote) {
+  margin: 6px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--line);
+  color: var(--text-soft);
 }
-.g-hint {
-  opacity: 0.65;
-}
-/* 推荐页的标签是「点选」的，得像按钮；.chip 原本只是个静态小方块 */
-.tags {
-  margin-top: 0;
-}
-.tchip {
-  cursor: pointer;
-  background: var(--bg-field);
+.md :deep(code) {
+  background: var(--line-soft);
+  border-radius: 3px;
+  padding: 0 4px;
   font-size: 12px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  transition: color 0.14s ease, border-color 0.14s ease, background-color 0.14s ease;
 }
-.tchip:hover {
-  color: var(--text);
-  border-color: var(--accent);
+.rd-foot {
+  padding: 6px 11px;
+  border-top: 1px solid var(--line-soft);
 }
-.tchip.on {
-  color: var(--on-accent);
-  background: var(--accent);
-  border-color: var(--accent);
+.empty {
+  gap: 6px;
+  padding: 22px 12px;
+  align-items: flex-start;
 }
-.rec-hint {
+.empty p {
   margin: 0;
   line-height: 1.7;
 }
-.seen-tags {
-  margin: 0;
-  line-height: 1.6;
-}
-/* 推荐页里主按钮让给「让 AI 推荐大纲」，落盘动作退居次位 */
-.primary.ghost {
-  background: var(--bg-field);
-  color: var(--text);
-  border: 1px solid var(--line);
-}
-.chip {
-  font-size: 11px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 1px 6px;
-  color: var(--text-dim);
-}
-button.text.on {
-  color: var(--accent);
-  background: var(--accent-soft);
+/* 手机：清单改横排滚动，别占掉半屏 */
+@media (max-width: 640px) {
+  .split {
+    flex-direction: column;
+  }
+  .list {
+    width: auto;
+    flex: 0 0 auto;
+    flex-direction: row;
+    max-height: none;
+    overflow-x: auto;
+  }
+  .li {
+    flex: 0 0 auto;
+  }
 }
 </style>

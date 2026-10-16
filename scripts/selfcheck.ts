@@ -1894,6 +1894,29 @@ async function main() {
     )
   }
 
+  /* 46b. 稿纸顶部标题就地改（作者原话：「标题还是不能修改，如第一章那个归乡就无法改动」）
+     目录树的 F2 改名一直是通的 —— 作者改不动的是编辑器稿纸顶部那个 h2，它原先纯展示。
+     修法是点一下原地变输入框，回车/失焦提交走**同一条 renameChapter 链路**（文件名 +
+     frontmatter + 目录树一起换），Esc 放弃。e2e §7.09b 验行为，这里钉源码别回退。 */
+  {
+    const pane = readSrc('src/components/EditorPane.vue')
+    check(
+      '稿纸标题：点标题就地变输入框（h2 不再是纯展示）',
+      /class="ch-title"[\s\S]{0,160}?@click="startEditTitle"/.test(pane) &&
+        /v-else[\s\S]{0,160}?class="ch-title-input"/.test(pane)
+    )
+    check(
+      '稿纸标题：提交走 renameChapter（与目录树改名同一条链路，文件名跟着换）',
+      /async function commitTitle\(\)[\s\S]{0,400}?renameChapter\(ch\.id, v\)/.test(pane)
+    )
+    check(
+      '稿纸标题：回车提交 / Esc 放弃 / 失焦也提交（三种收尾都有，不卡在编辑态）',
+      /@keydown\.enter\.prevent="commitTitle"/.test(pane) &&
+        /@keydown\.esc\.stop\.prevent="cancelTitle"/.test(pane) &&
+        /@blur="commitTitle"/.test(pane)
+    )
+  }
+
   /* 47. 切视图 / 切页签只有一个入口（P4 · 手机端）
      动效的方向是 setView / setDockTab 在**改状态之前**算好写进 viewFx/dockFx 的。
      绕过去直接 `editorState.view = '板'` 的话照样能切，只是方向是上一次留下的 ——
@@ -2005,7 +2028,10 @@ async function main() {
       '技能：单个 md/txt 也能导入（最常见的形态就是一个 SKILL.md，不该逼人先打成 zip）',
       /accept="\.zip,\.md,\.markdown,\.txt"/.test(sk) && /parseSkillFile\(raw, 'work', f\.name\)/.test(sk)
     )
-    const dlg = readSrc('src/components/OutlineDialog.vue')
+    /* 2026-10 起功能汇总：原「大纲」窗口的生成/编辑/AI 推荐全部搬进「导入大纲」，
+       「大纲」窗口本身改成纯查看器（作者原话：导入大纲后可以在大纲页面看本作大纲卷纲）。
+       下面这些断言跟着功能走 —— 判据没变，只是住处换了。 */
+    const dlg = readSrc('src/components/ImportOutlineDialog.vue')
     const outline = readSrc('src/core/outline.ts')
     check(
       '大纲：推荐模式存在（从零推荐故事线，材料或标签至少要给一样）',
@@ -2022,6 +2048,26 @@ async function main() {
       /idea: recIdea\.value/.test(dlg) && /idea\?: string/.test(outline)
     )
     check('大纲：标签与篇幅走 core/tags（零依赖纯函数，不引分词库）', /from '@\/core\/tags'/.test(dlg))
+    check(
+      '大纲：功能汇总进「导入大纲」（导入 / 生成骨架 / 现有大纲 / AI 推荐四个页签都在这一个窗口）',
+      /tab = ref<'import' \| 'new' \| 'existing' \| 'recommend'>/.test(dlg) &&
+        /生成新骨架/.test(dlg) &&
+        /用现有大纲/.test(dlg) &&
+        /AI 推荐/.test(dlg)
+    )
+    const outlineView = readSrc('src/components/OutlineDialog.vue')
+    check(
+      '⚠ 大纲窗口 = 查看器：列出全书大纲与各卷卷纲，不再放生成/导入/AI 功能',
+      /findBookOutlinePath/.test(outlineView) && /readVolumeOutline/.test(outlineView) && !/buildSkeleton|recommendPrompt|buildChapters/.test(outlineView)
+    )
+    check(
+      '大纲窗口空态引导去「导入大纲」（两个入口名字都不改，只分工）',
+      /emit\('import-outline'\)/.test(outlineView) && /去导入大纲/.test(outlineView)
+    )
+    check(
+      '功能栏窗口化：两个大纲窗口都走 WinBox（桌面可拖动缩放，手机保持抽屉）',
+      /from '\.\/WinBox\.vue'/.test(outlineView) && /from '\.\/WinBox\.vue'/.test(dlg)
+    )
   }
 
   /* 50. 写作区稿纸不许塌缩（2026-10-09 的真实截图事故）
@@ -2478,8 +2524,9 @@ async function main() {
     )
 
     /* 综合大纲 —— 用户明确要的「AI 推荐世界观和人物设定，综合大纲和作品标签」。
-       判定点是**大纲真的进了提示词**，而不是界面上提了一句。 */
-    const outlineDlg = readSrc('src/components/OutlineDialog.vue')
+       判定点是**大纲真的进了提示词**，而不是界面上提了一句。
+       标签记忆那段原在「大纲」窗口，功能汇总后跟着搬进「导入大纲」（AI 推荐页签）。 */
+    const outlineDlg = readSrc('src/components/ImportOutlineDialog.vue')
     check(
       '⚠ 设定生成：大纲进提示词，且写明「设定要托住故事走向」（不能只写在界面上）',
       /outline: genOutline\.value/.test(panel) && /你生成的设定必须能托住它/.test(wb)

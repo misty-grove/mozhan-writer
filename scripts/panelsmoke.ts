@@ -364,43 +364,38 @@ async function main() {
     editorState.refOpen = false
   }
 
-  /* 大纲与章纲（P1-19）：本地骨架 → 写进 大纲/大纲.md */
+  /* 「大纲」窗口 = 本书大纲查看器（功能已汇总进「导入大纲」，这里只管看） */
   {
     const { el, text, errs } = await mount('OutlineDialog', OutlineDialog, 200)
-    // 2026-10-10 起：卷数/章数是**作者填的输入框**，不再自动算一段「共 N 卷 · M 章」给人看
+    // seed 作品的 大纲/剧情大纲.md 还是新建时的稿纸模板（hasRealOutline 判为「不算」），卷纲也没写过 —— 正好走空态
     check(
-      '大纲：规模是三个输入框（卷数/章数/每章字数），没有自动算出来的卷章统计行',
-      el.querySelectorAll('.shape input').length === 3 && !/共 \d+ 卷 · \d+ 章/.test(text),
-      text.slice(0, 160)
+      '大纲查看器：没有大纲时给实话 + 去导入的入口（不再塞生成骨架 / AI 推荐）',
+      text.includes('还没有可看的大纲') && text.includes('去导入大纲'),
+      text.slice(0, 200)
     )
-    check('大纲：目标字数跟着规模算出来（约 N 万字）', /约 \d+(\.\d+)? 万字/.test(text), text.slice(0, 120))
-    check('大纲对话框预览骨架', el.querySelectorAll('.vol').length >= 1, String(el.querySelectorAll('.vol').length))
-    const chapterInput = el.querySelectorAll('.shape input')[1] as HTMLInputElement
-    chapterInput.value = '12'
-    chapterInput.dispatchEvent(new Event('input'))
-    chapterInput.dispatchEvent(new Event('change'))
-    await nextTick()
-    check(
-      '大纲：章数改成 12，预览跟着重排（4 卷 × 3 章）',
-      /第1章-第3章/.test(el.textContent || ''),
-      (el.textContent || '').slice(0, 200)
-    )
-    const writeBtn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('写入大纲文件')) as HTMLElement | undefined
-    check('有写入大纲按钮', !!writeBtn)
-    writeBtn?.click()
-    await new Promise((r) => setTimeout(r, 250))
-    check('写入后提示成功', (el.textContent || '').includes('已写入'), (el.textContent || '').slice(0, 200))
-    const omdRaw = await fs().readFile(state.ref!, ['大纲', '剧情大纲.md']).catch(() => '')
-    check('大纲/剧情大纲.md 写成了 Markdown 表格', omdRaw.includes('| 章节 | 目标 | 字数 |'), omdRaw.slice(0, 80))
-    check('大纲对话框无运行时错误', errs.length === 0, errs.join(' | '))
+    check('大纲查看器：头部保留「导入大纲」入口（与顶栏入口同名不同职）', !![...el.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === '导入大纲'))
+    check('大纲查看器无运行时错误', errs.length === 0, errs.join(' | '))
   }
 
-
-  /* 大纲 / 卷纲 / 章纲导入：粘贴 → 认层级 → 落盘 */
+  /* 「导入大纲」= 功能汇总：导入（默认页）→ 原大纲窗口的规模/骨架（生成新骨架页签） */
   {
+    /* 「AI 推荐」页签要 aiEnabled() 才渲染 —— 先把 AI 层配成「已配置」验四页签，
+       验完立刻恢复（example.invalid，不会发出任何真实请求）。 */
+    const aiBak = { ...settings.ai }
+    Object.assign(settings.ai, {
+      configured: true,
+      baseUrl: 'https://example.invalid/v1',
+      apiKey: 'panelsmoke-not-a-real-key',
+      model: 'panelsmoke-model'
+    })
     const { el, text, errs } = await mount('ImportOutlineDialog', ImportOutlineDialog, 200)
     const ta = el.querySelector('textarea') as HTMLTextAreaElement | null
     check('导入大纲框给了可粘贴的输入框（文件选不了时还能粘）', !!ta)
+    check(
+      '导入大纲窗口四个页签俱全（导入 / 生成新骨架 / 用现有大纲 / AI 推荐）',
+      ['导入', '生成新骨架', '用现有大纲', 'AI 推荐'].every((t) => (el.textContent || '').includes(t)),
+      (el.textContent || '').slice(0, 160)
+    )
     if (ta) {
       ta.value = '# 第一卷 启程\n卷目标：回到原点\n\n## 第一章 雪夜\n本章目标：立住人物与处境\n雪夜回乡。\n'
       ta.dispatchEvent(new window.Event('input'))
@@ -418,6 +413,38 @@ async function main() {
     const vg = await ws.readVolumeOutline(state.ref!, `正文/${volDirs.find((n) => n.includes('第一卷'))}`)
     check('卷纲写进 front matter 与正文', String(vg.meta.target || '') === '回到原点' && vg.body.includes('第一章 雪夜'), JSON.stringify(vg.meta))
     check('导入大纲框无运行时错误', errs.length === 0, errs.join(' | '))
+
+    /* —— 原「大纲」窗口的规模断言：功能搬进「生成新骨架」页签后在这里接着验 —— */
+    const newTab = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === '生成新骨架') as HTMLElement | undefined
+    check('页签切得到「生成新骨架」', !!newTab)
+    newTab?.click()
+    await nextTick()
+    check(
+      '大纲：规模是三个输入框（卷数/章数/每章字数），没有自动算出来的卷章统计行',
+      el.querySelectorAll('.shape input').length === 3 && !/共 \d+ 卷 · \d+ 章/.test(el.textContent || ''),
+      (el.textContent || '').slice(0, 160)
+    )
+    check('大纲：目标字数跟着规模算出来（约 N 万字）', /约 \d+(\.\d+)? 万字/.test(el.textContent || ''), (el.textContent || '').slice(0, 120))
+    check('大纲预览骨架', el.querySelectorAll('.prev .vol').length >= 1, String(el.querySelectorAll('.prev .vol').length))
+    const chapterInput = el.querySelectorAll('.shape input')[1] as HTMLInputElement
+    chapterInput.value = '12'
+    chapterInput.dispatchEvent(new Event('input'))
+    chapterInput.dispatchEvent(new Event('change'))
+    await nextTick()
+    check(
+      '大纲：章数改成 12，预览跟着重排（4 卷 × 3 章）',
+      /第1章-第3章/.test(el.textContent || ''),
+      (el.textContent || '').slice(0, 200)
+    )
+    const writeBtn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('写入大纲文件')) as HTMLElement | undefined
+    check('有写入大纲按钮', !!writeBtn)
+    writeBtn?.click()
+    await new Promise((r) => setTimeout(r, 250))
+    check('写入后提示成功', (el.textContent || '').includes('已写入'), (el.textContent || '').slice(0, 200))
+    const omdRaw = await fs().readFile(state.ref!, ['大纲', '剧情大纲.md']).catch(() => '')
+    check('大纲/剧情大纲.md 写成了 Markdown 表格', omdRaw.includes('| 章节 | 目标 | 字数 |'), omdRaw.slice(0, 80))
+    check('生成骨架页无运行时错误', errs.length === 0, errs.join(' | '))
+    Object.assign(settings.ai, aiBak) // 恢复 AI 层开关，别把状态带给后面的用例
   }
 
   /* 插件机制（P2-30）：导出模板下拉 + 自定义统计 */
